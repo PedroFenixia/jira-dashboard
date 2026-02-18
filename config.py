@@ -12,8 +12,8 @@ class Config:
         self.project_key = os.getenv("JIRA_PROJECT_KEY", "ALL")
         self.all_projects = self.project_key.upper() == "ALL"
         self.story_points_field = os.getenv("STORY_POINTS_FIELD", "")
-        self.sprint_count = int(os.getenv("SPRINT_COUNT", "6"))
-        self.max_boards = int(os.getenv("MAX_BOARDS", "20"))
+        self.sprint_count = int(os.getenv("SPRINT_COUNT") or "6")
+        self.max_boards = int(os.getenv("MAX_BOARDS") or "20")
         self._validate()
 
     def _validate(self):
