@@ -9,9 +9,11 @@ class Config:
         self.jira_url = os.getenv("JIRA_URL", "").rstrip("/")
         self.jira_email = os.getenv("JIRA_EMAIL", "")
         self.jira_api_token = os.getenv("JIRA_API_TOKEN", "")
-        self.project_key = os.getenv("JIRA_PROJECT_KEY", "")
+        self.project_key = os.getenv("JIRA_PROJECT_KEY", "ALL")
+        self.all_projects = self.project_key.upper() == "ALL"
         self.story_points_field = os.getenv("STORY_POINTS_FIELD", "")
-        self.sprint_count = int(os.getenv("SPRINT_COUNT", "10"))
+        self.sprint_count = int(os.getenv("SPRINT_COUNT", "6"))
+        self.max_boards = int(os.getenv("MAX_BOARDS", "20"))
         self._validate()
 
     def _validate(self):
@@ -20,7 +22,6 @@ class Config:
             ("JIRA_URL", "jira_url"),
             ("JIRA_EMAIL", "jira_email"),
             ("JIRA_API_TOKEN", "jira_api_token"),
-            ("JIRA_PROJECT_KEY", "project_key"),
         ]:
             if not getattr(self, attr):
                 missing.append(var)

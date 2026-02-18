@@ -44,7 +44,7 @@ class JiraClient:
                     continue
 
                 print(f"Error {resp.status_code}: {resp.text[:300]}")
-                sys.exit(1)
+                raise RuntimeError(f"HTTP {resp.status_code}")
 
             except requests.exceptions.ConnectionError:
                 wait = 2 ** attempt
@@ -52,7 +52,7 @@ class JiraClient:
                 time.sleep(wait)
 
         print(f"Fallo tras {max_retries} reintentos: {url}")
-        sys.exit(1)
+        raise RuntimeError(f"Failed after {max_retries} retries: {url}")
 
     # ── Pagination ───────────────────────────────────────────────
 
@@ -134,13 +134,22 @@ class JiraClient:
 
     def get_boards(self):
         url = f"{self.config.agile_url}/board"
-        return self._paginate_offset(
-            url, params={"projectKeyOrId": self.config.project_key}
-        )
+        params = {}
+        if not self.config.all_projects:
+            params["projectKeyOrId"] = self.config.project_key
+        boards = self._paginate_offset(url, params=params)
+        if self.config.all_projects:
+            boards = boards[:self.config.max_boards]
+        return boards
 
     def get_sprints(self, board_id):
         url = f"{self.config.agile_url}/board/{board_id}/sprint"
-        return self._paginate_offset(url)
+        try:
+            return self._paginate_offset(url)
+        except (RuntimeError, Exception):
+            # Some boards don't support sprints (Kanban without sprints)
+            print(f"    Board {board_id}: sin sprints, saltando...")
+            return []
 
     def get_sprint_issues(self, board_id, sprint_id):
         url = f"{self.config.agile_url}/board/{board_id}/sprint/{sprint_id}/issue"
@@ -155,7 +164,11 @@ class JiraClient:
             "created", "updated", "resolutiondate", "resolution",
             "timetracking", "labels", "components", sp_field,
         ]
-        jql = f"project = {self.config.project_key} ORDER BY created ASC"
+        if self.config.all_projects:
+            # All projects, last 6 months to keep it manageable
+            jql = "created >= -180d ORDER BY created ASC"
+        else:
+            jql = f"project = {self.config.project_key} ORDER BY created ASC"
         return self._search_issues(jql, fields)
 
     def get_issue_changelog(self, issue_key):

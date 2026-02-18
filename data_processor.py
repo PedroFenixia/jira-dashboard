@@ -17,7 +17,7 @@ def _week_label(dt):
 class DataProcessor:
     def __init__(self, config):
         self.sp_field = config.story_points_field or "customfield_10016"
-        self.project_key = config.project_key
+        self.project_key = "Todos los proyectos" if config.all_projects else config.project_key
 
     def _get_sp(self, issue):
         return issue.get("fields", {}).get(self.sp_field) or 0
