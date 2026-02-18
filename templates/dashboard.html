@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JIRA Dashboard — {{ metrics.project_key }}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #f8fafc;
+    --card: #ffffff;
+    --text: #1e293b;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --blue: #3b82f6;
+    --green: #22c55e;
+    --amber: #f59e0b;
+    --red: #ef4444;
+    --purple: #8b5cf6;
+    --cyan: #06b6d4;
+    --pink: #ec4899;
+    --radius: 12px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+    padding: 24px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+
+  /* ── Header ─────────────────────────────────────── */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .header h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+  }
+  .header h1 span { color: var(--blue); }
+  .header .meta {
+    color: var(--muted);
+    font-size: 0.875rem;
+  }
+
+  /* ── Summary cards ──────────────────────────────── */
+  .summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 32px;
+  }
+  .stat-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    text-align: center;
+  }
+  .stat-card .value {
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+  .stat-card .label {
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-top: 4px;
+  }
+  .stat-card.blue .value { color: var(--blue); }
+  .stat-card.green .value { color: var(--green); }
+  .stat-card.purple .value { color: var(--purple); }
+  .stat-card.amber .value { color: var(--amber); }
+
+  /* ── Section headings ───────────────────────────── */
+  .section-title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    margin: 32px 0 16px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid var(--border);
+  }
+
+  /* ── Chart grid ─────────────────────────────────── */
+  .chart-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    margin-bottom: 16px;
+  }
+  .chart-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  .chart-card h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+  .chart-card canvas {
+    width: 100% !important;
+    max-height: 320px;
+  }
+
+  /* ── Backlog table ──────────────────────────────── */
+  .backlog-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+  }
+  .mini-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+  }
+  .mini-table th, .mini-table td {
+    padding: 8px 12px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  .mini-table th {
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+  }
+  .mini-table td:last-child {
+    text-align: right;
+    font-weight: 600;
+  }
+
+  /* ── Footer ─────────────────────────────────────── */
+  .footer {
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.75rem;
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+  }
+
+  /* ── Responsive ─────────────────────────────────── */
+  @media (max-width: 768px) {
+    .chart-grid, .backlog-grid { grid-template-columns: 1fr; }
+    body { padding: 12px; }
+  }
+
+  @media print {
+    body { padding: 0; }
+    .chart-card { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ HEADER ═══ -->
+<div class="header">
+  <h1>Dashboard JIRA — <span>{{ metrics.project_key }}</span></h1>
+  <div class="meta">Generado: {{ metrics.generated_at }}</div>
+</div>
+
+<!-- ═══ SUMMARY CARDS ═══ -->
+<div class="summary">
+  <div class="stat-card blue">
+    <div class="value">{{ metrics.sprint_metrics | length }}</div>
+    <div class="label">Sprints analizados</div>
+  </div>
+  <div class="stat-card green">
+    <div class="value">{{ metrics.status_distribution.counts | sum }}</div>
+    <div class="label">Total issues</div>
+  </div>
+  <div class="stat-card purple">
+    <div class="value">{{ metrics.velocity.avg_velocity }}</div>
+    <div class="label">Velocidad media (SP)</div>
+  </div>
+  <div class="stat-card amber">
+    <div class="value">{{ metrics.cycle_time.avg_days }}d</div>
+    <div class="label">Cycle Time medio</div>
+  </div>
+</div>
+
+<!-- ═══ SECTION 1: SPRINT PERFORMANCE ═══ -->
+<div class="section-title">Sprint Performance</div>
+<div class="chart-grid">
+  <div class="chart-card">
+    <h3>Velocity (Story Points)</h3>
+    <canvas id="velocityChart"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>Sprint Completion Rate (%)</h3>
+    <canvas id="completionChart"></canvas>
+  </div>
+</div>
+
+<!-- ═══ SECTION 2: ISSUE OVERVIEW ═══ -->
+<div class="section-title">Issue Overview</div>
+<div class="chart-grid">
+  <div class="chart-card">
+    <h3>Distribución por Estado</h3>
+    <canvas id="statusChart"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>Distribución por Tipo</h3>
+    <canvas id="typeChart"></canvas>
+  </div>
+</div>
+
+<!-- ═══ SECTION 3: WORKLOAD & FLOW ═══ -->
+<div class="section-title">Workload & Flow</div>
+<div class="chart-grid">
+  <div class="chart-card">
+    <h3>Carga por Asignado (issues abiertas)</h3>
+    <canvas id="workloadChart"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>Creadas vs Resueltas (12 semanas)</h3>
+    <canvas id="flowChart"></canvas>
+  </div>
+</div>
+
+<!-- ═══ SECTION 4: TIME METRICS ═══ -->
+<div class="section-title">Time Metrics</div>
+<div class="chart-grid">
+  <div class="chart-card">
+    <h3>Tiempo Estimado vs Real (horas)</h3>
+    <canvas id="timeChart"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>Distribución Cycle Time</h3>
+    <canvas id="cycleChart"></canvas>
+  </div>
+</div>
+<div class="chart-grid">
+  <div class="chart-card">
+    <h3>Lead Time por Tipo (días promedio)</h3>
+    <canvas id="leadChart"></canvas>
+  </div>
+  <div class="chart-card">
+    <h3>Distribución por Prioridad</h3>
+    <canvas id="priorityChart"></canvas>
+  </div>
+</div>
+
+<!-- ═══ SECTION 5: BACKLOG HEALTH ═══ -->
+<div class="section-title">Backlog Health</div>
+<div class="chart-card" style="margin-bottom:20px">
+  <h3>Backlog abierto: {{ metrics.backlog.total }} issues</h3>
+  <div class="backlog-grid">
+    <div>
+      <table class="mini-table">
+        <thead><tr><th>Tipo</th><th>Cantidad</th></tr></thead>
+        <tbody>
+        {% for type, count in metrics.backlog.by_type.items() %}
+          <tr><td>{{ type }}</td><td>{{ count }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <table class="mini-table">
+        <thead><tr><th>Prioridad</th><th>Cantidad</th></tr></thead>
+        <tbody>
+        {% for prio, count in metrics.backlog.by_priority.items() %}
+          <tr><td>{{ prio }}</td><td>{{ count }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ FOOTER ═══ -->
+<div class="footer">
+  Generado automáticamente por jira-dashboard &middot; {{ metrics.generated_at }}
+</div>
+
+<!-- ═══ CHARTS JS ═══ -->
+<script>
+const M = {{ metrics | tojson }};
+
+const PALETTE = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#6b7280','#f97316','#14b8a6'];
+const PRIO_COLORS = {'Highest':'#dc2626','High':'#ef4444','Medium':'#f59e0b','Low':'#22c55e','Lowest':'#94a3b8'};
+
+Chart.defaults.font.family = "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+Chart.defaults.font.size = 12;
+Chart.defaults.plugins.legend.labels.usePointStyle = true;
+
+// 1. Velocity
+new Chart(document.getElementById('velocityChart'), {
+  type: 'bar',
+  data: {
+    labels: M.velocity.labels,
+    datasets: [
+      { label: 'Committed SP', data: M.velocity.committed, backgroundColor: 'rgba(59,130,246,0.7)', borderRadius: 4 },
+      { label: 'Completed SP', data: M.velocity.completed, backgroundColor: 'rgba(34,197,94,0.7)', borderRadius: 4 },
+    ]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { position: 'top' } },
+    scales: { y: { beginAtZero: true, title: { display: true, text: 'Story Points' } } }
+  }
+});
+
+// 2. Sprint Completion Rate
+new Chart(document.getElementById('completionChart'), {
+  type: 'line',
+  data: {
+    labels: M.sprint_metrics.filter(s => s.state === 'closed').map(s => s.name),
+    datasets: [{
+      label: 'Completion %',
+      data: M.sprint_metrics.filter(s => s.state === 'closed').map(s => s.completion_rate),
+      borderColor: '#8b5cf6',
+      backgroundColor: 'rgba(139,92,246,0.1)',
+      fill: true,
+      tension: 0.3,
+      pointRadius: 4,
+    }]
+  },
+  options: {
+    responsive: true,
+    scales: { y: { min: 0, max: 100, title: { display: true, text: '%' } } }
+  }
+});
+
+// 3. Status Distribution
+new Chart(document.getElementById('statusChart'), {
+  type: 'doughnut',
+  data: {
+    labels: M.status_distribution.labels,
+    datasets: [{ data: M.status_distribution.counts, backgroundColor: PALETTE }]
+  },
+  options: { responsive: true, plugins: { legend: { position: 'right' } } }
+});
+
+// 4. Issue Type Distribution
+new Chart(document.getElementById('typeChart'), {
+  type: 'doughnut',
+  data: {
+    labels: M.issue_types.labels,
+    datasets: [{ data: M.issue_types.counts, backgroundColor: PALETTE.slice().reverse() }]
+  },
+  options: { responsive: true, plugins: { legend: { position: 'right' } } }
+});
+
+// 5. Assignee Workload
+new Chart(document.getElementById('workloadChart'), {
+  type: 'bar',
+  data: {
+    labels: M.assignee_workload.labels,
+    datasets: [{ label: 'Issues abiertas', data: M.assignee_workload.counts, backgroundColor: 'rgba(6,182,212,0.7)', borderRadius: 4 }]
+  },
+  options: {
+    indexAxis: 'y',
+    responsive: true,
+    scales: { x: { beginAtZero: true } },
+    plugins: { legend: { display: false } }
+  }
+});
+
+// 6. Created vs Resolved
+new Chart(document.getElementById('flowChart'), {
+  type: 'line',
+  data: {
+    labels: M.created_vs_resolved.labels,
+    datasets: [
+      { label: 'Creadas', data: M.created_vs_resolved.created, borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)', fill: true, tension: 0.3 },
+      { label: 'Resueltas', data: M.created_vs_resolved.resolved, borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.1)', fill: true, tension: 0.3 },
+    ]
+  },
+  options: { responsive: true, scales: { y: { beginAtZero: true } } }
+});
+
+// 7. Time Estimated vs Actual
+new Chart(document.getElementById('timeChart'), {
+  type: 'bar',
+  data: {
+    labels: M.time_tracking.labels,
+    datasets: [
+      { label: 'Estimado (h)', data: M.time_tracking.estimated, backgroundColor: 'rgba(59,130,246,0.7)', borderRadius: 4 },
+      { label: 'Real (h)', data: M.time_tracking.actual, backgroundColor: 'rgba(249,115,22,0.7)', borderRadius: 4 },
+    ]
+  },
+  options: {
+    responsive: true,
+    scales: { y: { beginAtZero: true, title: { display: true, text: 'Horas' } } },
+    plugins: { legend: { position: 'top' } }
+  }
+});
+
+// 8. Cycle Time Distribution
+new Chart(document.getElementById('cycleChart'), {
+  type: 'bar',
+  data: {
+    labels: M.cycle_time.dist_labels,
+    datasets: [{ label: 'Issues', data: M.cycle_time.distribution, backgroundColor: 'rgba(139,92,246,0.7)', borderRadius: 4 }]
+  },
+  options: {
+    responsive: true,
+    scales: { y: { beginAtZero: true, title: { display: true, text: 'Nº Issues' } } },
+    plugins: { legend: { display: false } }
+  }
+});
+
+// 9. Lead Time by Type
+new Chart(document.getElementById('leadChart'), {
+  type: 'bar',
+  data: {
+    labels: M.lead_time.labels,
+    datasets: [{ label: 'Días promedio', data: M.lead_time.averages, backgroundColor: 'rgba(6,182,212,0.7)', borderRadius: 4 }]
+  },
+  options: {
+    responsive: true,
+    scales: { y: { beginAtZero: true, title: { display: true, text: 'Días' } } },
+    plugins: { legend: { display: false } }
+  }
+});
+
+// 10. Priority Distribution
+new Chart(document.getElementById('priorityChart'), {
+  type: 'doughnut',
+  data: {
+    labels: M.priority_distribution.labels,
+    datasets: [{
+      data: M.priority_distribution.counts,
+      backgroundColor: M.priority_distribution.labels.map(l => PRIO_COLORS[l] || '#94a3b8')
+    }]
+  },
+  options: { responsive: true, plugins: { legend: { position: 'right' } } }
+});
+</script>
+
+</body>
+</html>

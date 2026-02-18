@@ -1,0 +1,60 @@
+name: Generate JIRA Dashboard
+
+on:
+  # Run every 2 hours
+  schedule:
+    - cron: '0 */2 * * *'
+  # Allow manual trigger
+  workflow_dispatch:
+  # Also on push to main (first deploy)
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate dashboard
+        env:
+          JIRA_URL: ${{ secrets.JIRA_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          STORY_POINTS_FIELD: ${{ secrets.STORY_POINTS_FIELD }}
+          SPRINT_COUNT: ${{ secrets.SPRINT_COUNT }}
+        run: python main.py --output _site/index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: generate
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
