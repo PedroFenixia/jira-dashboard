@@ -38,7 +38,8 @@ def fetch_group_members(client, keyword="reportes"):
 
         # Fetch group members
         member_url = f"{client.config.api_url}/group/member"
-        params = {"groupId": group_id, "maxResults": 200, "startAt": 0}
+        params = {"groupId": group_id, "maxResults": 200, "startAt": 0,
+                  "includeInactiveUsers": "true"}
         while True:
             data = client._request("GET", member_url, params=params).json()
             for m in data.get("values", []):
