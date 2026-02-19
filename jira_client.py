@@ -46,7 +46,8 @@ class JiraClient:
                 print(f"Error {resp.status_code}: {resp.text[:300]}")
                 raise RuntimeError(f"HTTP {resp.status_code}")
 
-            except requests.exceptions.ConnectionError:
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.ChunkedEncodingError):
                 wait = 2 ** attempt
                 print(f"  Error de conexión. Reintento en {wait}s...")
                 time.sleep(wait)
