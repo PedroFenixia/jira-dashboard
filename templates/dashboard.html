@@ -143,6 +143,82 @@
     font-weight: 600;
   }
 
+  /* ── Hours report ────────────────────────────────── */
+  .hours-controls {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .hours-controls select, .hours-controls input {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.875rem;
+    background: var(--card);
+    color: var(--text);
+  }
+  .hours-controls label {
+    font-size: 0.8rem;
+    color: var(--muted);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .hours-table-wrap {
+    overflow-x: auto;
+    margin-top: 12px;
+  }
+  .hours-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    white-space: nowrap;
+  }
+  .hours-table th, .hours-table td {
+    padding: 8px 14px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+  }
+  .hours-table th {
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    position: sticky;
+    top: 0;
+    background: var(--card);
+  }
+  .hours-table th:first-child, .hours-table td:first-child {
+    text-align: left;
+    position: sticky;
+    left: 0;
+    background: var(--card);
+    z-index: 1;
+  }
+  .hours-table tr:hover td { background: #f1f5f9; }
+  .hours-table .total-row td {
+    font-weight: 700;
+    border-top: 2px solid var(--text);
+    background: #f8fafc;
+  }
+  .hours-table .total-col { font-weight: 700; color: var(--blue); }
+  .hr-select { min-width: 140px; }
+  .hr-select-wide { min-width: 200px; }
+  .hr-select-narrow { min-width: 140px; }
+  .hr-buttons { align-self: flex-end; }
+  .hr-btn {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--card);
+    font-size: 0.8rem;
+    margin-left: 4px;
+  }
+  .hr-btn:hover { background: #f1f5f9; }
+
   /* ── Footer ─────────────────────────────────────── */
   .footer {
     text-align: center;
@@ -282,6 +358,49 @@
     </div>
   </div>
 </div>
+
+<!-- ═══ SECTION 6: HOURS REPORT ═══ -->
+{% if metrics.hours_report.rows %}
+<div class="section-title">Informe de Horas por Usuario</div>
+<div class="chart-card" style="margin-bottom:20px">
+  <h3>Horas registradas — Total: {{ metrics.hours_report.grand_total }}h</h3>
+
+  <!-- Controls -->
+  <div class="hours-controls">
+    <div>
+      <label for="hrUserFilter">Usuarios</label><br>
+      <select id="hrUserFilter" title="Filtrar por usuarios" multiple size="4" class="hr-select hr-select-wide">
+        {% for row in metrics.hours_report.rows %}
+        <option value="{{ row.user }}" selected>{{ row.user }} ({{ row.total }}h)</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div>
+      <label for="hrMonthFilter">Meses</label><br>
+      <select id="hrMonthFilter" title="Filtrar por meses" multiple size="4" class="hr-select hr-select-narrow">
+        {% for m in metrics.hours_report.months %}
+        <option value="{{ m }}" selected>{{ m }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="hr-buttons">
+      <button type="button" onclick="hrSelectAll()" class="hr-btn">Seleccionar todos</button>
+      <button type="button" onclick="hrClearAll()" class="hr-btn">Limpiar</button>
+    </div>
+  </div>
+
+  <!-- Chart -->
+  <canvas id="hoursChart" style="max-height:350px;margin-bottom:20px"></canvas>
+
+  <!-- Table -->
+  <div class="hours-table-wrap">
+    <table class="hours-table" id="hoursTable">
+      <thead id="hrHead"></thead>
+      <tbody id="hrBody"></tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
 
 <!-- ═══ FOOTER ═══ -->
 <div class="footer">
@@ -442,6 +561,147 @@ new Chart(document.getElementById('priorityChart'), {
   },
   options: { responsive: true, plugins: { legend: { position: 'right' } } }
 });
+
+// ═══ 11. INTERACTIVE HOURS REPORT ═══
+if (M.hours_report && M.hours_report.rows.length) {
+  const HR = M.hours_report;
+  const JIRA = M.jira_url || '';
+  const expanded = {};  // track expanded rows
+  let hoursChart = null;
+
+  const userSel = document.getElementById('hrUserFilter');
+  const monthSel = document.getElementById('hrMonthFilter');
+
+  function getSelected(sel) {
+    return Array.from(sel.selectedOptions).map(o => o.value);
+  }
+
+  window.hrSelectAll = function() {
+    Array.from(userSel.options).forEach(o => o.selected = true);
+    Array.from(monthSel.options).forEach(o => o.selected = true);
+    renderHours();
+  };
+  window.hrClearAll = function() {
+    Array.from(userSel.options).forEach(o => o.selected = false);
+    Array.from(monthSel.options).forEach(o => o.selected = false);
+    renderHours();
+  };
+
+  userSel.addEventListener('change', renderHours);
+  monthSel.addEventListener('change', renderHours);
+
+  function monthLabel(m) {
+    const [y, mo] = m.split('-');
+    const names = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+    return names[parseInt(mo)-1] + ' ' + y.slice(2);
+  }
+
+  function toggleRow(id) {
+    expanded[id] = !expanded[id];
+    renderHours();
+  }
+  window.toggleRow = toggleRow;
+
+  function renderHours() {
+    const selUsers = getSelected(userSel);
+    const selMonths = getSelected(monthSel);
+    const rows = HR.rows.filter(r => selUsers.includes(r.user));
+
+    // Header
+    const head = document.getElementById('hrHead');
+    head.innerHTML = '<tr><th style="text-align:left;min-width:250px">Usuario / Proyecto / Tarea</th>'
+      + selMonths.map(m => '<th>' + monthLabel(m) + '</th>').join('')
+      + '<th class="total-col">Total</th></tr>';
+
+    // Body
+    const body = document.getElementById('hrBody');
+    let html = '';
+
+    let grandMonths = {};
+    selMonths.forEach(m => grandMonths[m] = 0);
+    let grandTotal = 0;
+
+    rows.forEach(row => {
+      const uid = 'u_' + row.user.replace(/\s/g,'_');
+      const uTotal = selMonths.reduce((s, m) => s + (row.months[m]||0), 0);
+      grandTotal += uTotal;
+      selMonths.forEach(m => grandMonths[m] += (row.months[m]||0));
+
+      // User row (level 0)
+      html += '<tr style="cursor:pointer;font-weight:600" onclick="toggleRow(\'' + uid + '\')">'
+        + '<td>' + (expanded[uid] ? '▼' : '▶') + ' ' + row.user + '</td>'
+        + selMonths.map(m => '<td>' + (row.months[m] || '-') + '</td>').join('')
+        + '<td class="total-col">' + uTotal.toFixed(1) + '</td></tr>';
+
+      // Projects (level 1)
+      if (expanded[uid] && row.projects) {
+        row.projects.forEach(proj => {
+          const pid = uid + '_' + proj.key;
+          const pTotal = selMonths.reduce((s, m) => s + (proj.months[m]||0), 0);
+          if (pTotal === 0) return;
+
+          html += '<tr style="cursor:pointer;background:#f8fafc" onclick="toggleRow(\'' + pid + '\')">'
+            + '<td style="padding-left:28px">' + (expanded[pid] ? '▼' : '▶') + ' <strong>' + proj.key + '</strong></td>'
+            + selMonths.map(m => '<td>' + (proj.months[m] || '-') + '</td>').join('')
+            + '<td class="total-col">' + pTotal.toFixed(1) + '</td></tr>';
+
+          // Issues (level 2)
+          if (expanded[pid] && proj.issues) {
+            proj.issues.forEach(iss => {
+              const iTotal = selMonths.reduce((s, m) => s + (iss.months[m]||0), 0);
+              if (iTotal === 0) return;
+              const link = JIRA ? '<a href="' + JIRA + '/browse/' + iss.key + '" target="_blank" style="color:var(--blue);text-decoration:none">' + iss.key + '</a>' : iss.key;
+              const summary = iss.summary ? ' — ' + iss.summary.substring(0, 50) : '';
+
+              html += '<tr style="background:#f1f5f9;font-size:0.8rem">'
+                + '<td style="padding-left:56px">' + link + '<span style="color:var(--muted)">' + summary + '</span></td>'
+                + selMonths.map(m => '<td>' + (iss.months[m] || '-') + '</td>').join('')
+                + '<td class="total-col">' + iTotal.toFixed(1) + '</td></tr>';
+            });
+          }
+        });
+      }
+    });
+
+    // Totals row
+    html += '<tr class="total-row"><td><strong>TOTAL</strong></td>'
+      + selMonths.map(m => '<td>' + (grandMonths[m]||0).toFixed(1) + '</td>').join('')
+      + '<td class="total-col">' + grandTotal.toFixed(1) + '</td></tr>';
+
+    body.innerHTML = html;
+
+    // Update stacked bar chart
+    renderHoursChart(rows, selMonths);
+  }
+
+  function renderHoursChart(rows, months) {
+    const canvas = document.getElementById('hoursChart');
+    if (hoursChart) hoursChart.destroy();
+
+    const datasets = rows.map((row, i) => ({
+      label: row.user,
+      data: months.map(m => row.months[m] || 0),
+      backgroundColor: PALETTE[i % PALETTE.length],
+      borderRadius: 2,
+    }));
+
+    hoursChart = new Chart(canvas, {
+      type: 'bar',
+      data: { labels: months.map(monthLabel), datasets },
+      options: {
+        responsive: true,
+        plugins: { legend: { position: 'top' } },
+        scales: {
+          x: { stacked: true },
+          y: { stacked: true, beginAtZero: true, title: { display: true, text: 'Horas' } }
+        }
+      }
+    });
+  }
+
+  // Initial render
+  renderHours();
+}
 </script>
 
 </body>

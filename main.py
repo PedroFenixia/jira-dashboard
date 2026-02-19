@@ -80,7 +80,28 @@ def main():
         project_issues = []
     print(f"  Total: {len(project_issues)} issues")
 
-    # 7. Fetch changelogs for cycle time (limit 50 for multi-project)
+    # 7. Fetch worklogs for time report (issues with timeSpent > 0)
+    print("Obteniendo worklogs para informe de horas...")
+    issues_with_time = [
+        i for i in project_issues
+        if (i.get("fields", {}).get("timetracking", {}).get("timeSpentSeconds") or 0) > 0
+    ]
+    print(f"  {len(issues_with_time)} issues con tiempo registrado")
+    all_worklogs = []
+    for idx, issue in enumerate(issues_with_time):
+        key = issue["key"]
+        try:
+            wls = client.get_issue_worklogs(key)
+            for wl in wls:
+                wl["_issueKey"] = key
+            all_worklogs.extend(wls)
+        except Exception:
+            pass
+        if (idx + 1) % 25 == 0:
+            print(f"  {idx + 1}/{len(issues_with_time)} issues procesadas")
+    print(f"  {len(all_worklogs)} worklogs obtenidos")
+
+    # 8. Fetch changelogs for cycle time (limit 50 for multi-project)
     max_changelogs = 50 if config.all_projects else 100
     print(f"Obteniendo changelogs para cycle time (máx {max_changelogs})...")
     resolved = [i for i in project_issues if i.get("fields", {}).get("resolutiondate")]
@@ -96,12 +117,15 @@ def main():
             print(f"  {idx + 1}/{len(sample)} changelogs procesados")
     print(f"  {len(changelogs)} changelogs obtenidos")
 
-    # 8. Process metrics
+    # 9. Process metrics
     print("Calculando métricas...")
     processor = DataProcessor(config)
-    metrics = processor.process_all(sprints_data, project_issues, changelogs)
+    metrics = processor.process_all(
+        sprints_data, project_issues, changelogs, all_worklogs,
+        jira_url=config.jira_url,
+    )
 
-    # 9. Generate dashboard
+    # 10. Generate dashboard
     print("Generando dashboard...")
     generator = DashboardGenerator()
     output_path = generator.generate(metrics, args.output)

@@ -30,10 +30,20 @@ class DataProcessor:
 
     # ── Public API ───────────────────────────────────────────────
 
-    def process_all(self, sprints_data, project_issues, changelogs):
+    def process_all(self, sprints_data, project_issues, changelogs,
+                     worklogs=None, jira_url=""):
+        # Build issue key → summary map for hours report links
+        issue_map = {}
+        for i in project_issues:
+            key = i.get("key", "")
+            summary = i.get("fields", {}).get("summary", "")
+            if key:
+                issue_map[key] = summary
+
         return {
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             "project_key": self.project_key,
+            "jira_url": jira_url,
             "sprint_metrics": self._sprint_metrics(sprints_data),
             "velocity": self._velocity(sprints_data),
             "status_distribution": self._status_distribution(project_issues),
@@ -45,6 +55,7 @@ class DataProcessor:
             "cycle_time": self._cycle_time(changelogs),
             "lead_time": self._lead_time(project_issues),
             "priority_distribution": self._priority_distribution(project_issues),
+            "hours_report": self._hours_report(worklogs or [], issue_map),
         }
 
     # ── Sprint metrics ───────────────────────────────────────────
@@ -290,4 +301,84 @@ class DataProcessor:
             "median_days": median,
             "labels": labels,
             "averages": averages,
+        }
+
+    # ── Hours report (worklogs) ──────────────────────────────────
+
+    def _hours_report(self, worklogs, issue_map=None):
+        """Hours logged per user per month, hierarchical: user → project → issue."""
+        issue_map = issue_map or {}
+
+        # Collect: {user: {project: {issue_key: {month: hours}}}}
+        tree = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: defaultdict(float))))
+        all_months = set()
+
+        for wl in worklogs:
+            author = wl.get("author", {})
+            name = author.get("displayName", "Desconocido")
+            seconds = wl.get("timeSpentSeconds", 0)
+            started = _parse_date(wl.get("started"))
+            issue_key = wl.get("_issueKey", "???")
+            if not started or not seconds:
+                continue
+            month = started.strftime("%Y-%m")
+            hours = seconds / 3600
+            project = issue_key.split("-")[0] if "-" in issue_key else "OTHER"
+            tree[name][project][issue_key][month] += hours
+            all_months.add(month)
+
+        months = sorted(all_months)
+
+        def _sum_months(month_dict):
+            return {m: round(month_dict.get(m, 0), 1) for m in months}
+
+        def _total(month_dict):
+            return round(sum(month_dict.get(m, 0) for m in months), 1)
+
+        rows = []
+        for user in sorted(tree.keys()):
+            user_months = defaultdict(float)
+            projects = []
+            for proj_key in sorted(tree[user].keys()):
+                proj_months = defaultdict(float)
+                issues = []
+                for iss_key in sorted(tree[user][proj_key].keys()):
+                    iss_m = tree[user][proj_key][iss_key]
+                    for m, h in iss_m.items():
+                        proj_months[m] += h
+                        user_months[m] += h
+                    summary = issue_map.get(iss_key, "")
+                    issues.append({
+                        "key": iss_key,
+                        "summary": summary,
+                        "months": _sum_months(iss_m),
+                        "total": _total(iss_m),
+                    })
+                issues.sort(key=lambda x: -x["total"])
+                projects.append({
+                    "key": proj_key,
+                    "months": _sum_months(proj_months),
+                    "total": _total(proj_months),
+                    "issues": issues,
+                })
+            projects.sort(key=lambda x: -x["total"])
+            rows.append({
+                "user": user,
+                "months": _sum_months(user_months),
+                "total": _total(user_months),
+                "projects": projects,
+            })
+
+        rows.sort(key=lambda r: -r["total"])
+
+        month_totals = {}
+        for m in months:
+            month_totals[m] = round(sum(r["months"].get(m, 0) for r in rows), 1)
+        grand_total = round(sum(r["total"] for r in rows), 1)
+
+        return {
+            "months": months,
+            "rows": rows,
+            "month_totals": month_totals,
+            "grand_total": grand_total,
         }
