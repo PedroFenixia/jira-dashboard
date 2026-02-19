@@ -476,6 +476,12 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
         from_options += f'<option value="{m}"{from_sel}>{label}</option>'
         to_options += f'<option value="{m}"{to_sel}>{label}</option>'
 
+    # Year selector options
+    year_set = sorted(set(m[:4] for m in months))
+    year_options = '<option value="">Todos</option>'
+    for y in year_set:
+        year_options += f'<option value="{y}">{y}</option>'
+
     group_items = "".join(
         f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="buildPersonal()">{g}</label>'
         for g in group_names
@@ -638,6 +644,8 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 <div class="meta">Generado: {datetime.now().strftime("%Y-%m-%d %H:%M")}</div>
 
 <div class="filters">
+  <label>A&ntilde;o:</label>
+  <select id="yearSelect" onchange="onYearChange()">{year_options}</select>
   <label>Desde:</label>
   <select id="dateFrom" onchange="onDateChange()">{from_options}</select>
   <label>Hasta:</label>
@@ -751,7 +759,22 @@ const JIRA = "{jira_url}";
 const MNAMES = {json.dumps(MONTH_NAMES)};
 const collapsedYears = new Set();
 
+const sortES = (a, b) => a.localeCompare(b, 'es', {{sensitivity: 'base'}});
 function fmt(h) {{ return h === 0 ? '<span class="zero">-</span>' : h.toFixed(1); }}
+
+function onYearChange() {{
+  const y = document.getElementById('yearSelect').value;
+  if (!y) {{
+    document.getElementById('dateFrom').value = ALL_MONTHS[0];
+    document.getElementById('dateTo').value = ALL_MONTHS[ALL_MONTHS.length - 1];
+  }} else {{
+    const first = ALL_MONTHS.find(m => m.startsWith(y));
+    const last = ALL_MONTHS.filter(m => m.startsWith(y)).pop();
+    if (first) document.getElementById('dateFrom').value = first;
+    if (last) document.getElementById('dateTo').value = last;
+  }}
+  onDateChange();
+}}
 
 function getVisibleMonths() {{
   const f = document.getElementById('dateFrom').value;
@@ -888,7 +911,7 @@ function buildPersonal() {{
   const selGroups = getSelectedGroups();
   buildHeaders('pHead');
 
-  const users = Object.keys(PERSONAL).sort();
+  const users = Object.keys(PERSONAL).sort(sortES);
   let html = '';
   let rid = 0;
   const mTotals = {{}};
@@ -968,7 +991,7 @@ function buildNeuro() {{
   const cols = getColumns(vm);
   buildHeaders('nHead');
 
-  const parents = Object.keys(NEURO).sort();
+  const parents = Object.keys(NEURO).sort(sortES);
   let html = '';
   let rid = 0;
   const mTotals = {{}};
@@ -997,7 +1020,7 @@ function buildNeuro() {{
       '<span class="arrow">&#9654;</span> ' + parent + '</td>' + cells +
       '<td class="total">' + uTotal.toFixed(1) + '</td></tr>\\n';
 
-    Object.keys(children).sort().forEach(child => {{
+    Object.keys(children).sort(sortES).forEach(child => {{
       const cid = 'n' + (rid++);
       const tasks = children[child];
       const cM = {{}};
@@ -1044,7 +1067,7 @@ function buildChanges() {{
   const cols = getColumns(vm);
   buildHeaders('chHead');
 
-  const labels = Object.keys(CHANGES).sort();
+  const labels = Object.keys(CHANGES).sort(sortES);
   let html = '';
   let rid = 0;
   const mTotals = {{}};
@@ -1116,7 +1139,7 @@ function buildComparison() {{
   mr += '<th style="color:var(--blue)">JIRA</th><th style="color:var(--purple)">FACT</th></tr>';
   document.getElementById('cpHead').innerHTML = yr + mr;
 
-  const users = Object.keys(COMPARISON).sort();
+  const users = Object.keys(COMPARISON).sort(sortES);
   let html = '';
   let tJira = 0, tFact = 0;
 
@@ -1140,6 +1163,7 @@ function buildComparison() {{
       const bg = pct <= 10 ? '' : pct <= 25 ? 'background:#fef3c7;' : 'background:#fecaca;';
       cells += '<td style="' + bg + '">' + fmt(j) + '</td><td style="' + bg + '">' + fmt(f) + '</td>';
     }});
+    if (uJ === 0 && uF === 0) return;
     tJira += uJ; tFact += uF;
     html += '<tr class="row-l0"><td style="text-align:left;position:sticky;left:0;background:var(--card);z-index:1">' +
       user + '</td>' + cells +
@@ -1153,7 +1177,7 @@ function buildComparison() {{
 }}
 
 function buildLeaves() {{
-  const users = Object.keys(LEAVES).sort();
+  const users = Object.keys(LEAVES).sort(sortES);
   let html = '';
   let rid = 0;
   let totalDays = 0;
