@@ -348,6 +348,11 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   .row-totals td:first-child {{ text-align: left; position: sticky; left: 0; background: #f1f5f9; z-index: 1; }}
   .row-totals td.grand {{ color: var(--green); font-size: 0.9rem; }}
 
+  /* Year headers */
+  .year-row th {{ background: #e8edf5; }}
+  .year-th {{ cursor: pointer; text-align: center !important; font-size: 0.78rem; }}
+  .year-th:hover {{ background: #dce3ed !important; }}
+
   .zero {{ color: #cbd5e1; }}
   .footer {{ text-align: center; color: var(--muted); font-size: 0.7rem; margin-top: 24px; }}
   @media print {{
@@ -414,6 +419,7 @@ const ALL_MONTHS = {json.dumps(months)};
 const USER_GROUPS = {json.dumps(user_groups_map, ensure_ascii=False)};
 const JIRA = "{jira_url}";
 const MNAMES = {json.dumps(MONTH_NAMES)};
+const collapsedYears = new Set();
 
 function fmt(h) {{ return h === 0 ? '<span class="zero">-</span>' : h.toFixed(1); }}
 
@@ -423,12 +429,67 @@ function getVisibleMonths() {{
   return ALL_MONTHS.filter(m => m >= f && m <= t);
 }}
 
+function getYearGroups(vm) {{
+  const g = {{}};
+  vm.forEach(m => {{
+    const y = m.slice(0, 4);
+    if (!g[y]) g[y] = [];
+    g[y].push(m);
+  }});
+  return g;
+}}
+
+function getColumns(vm) {{
+  const yg = getYearGroups(vm);
+  const cols = [];
+  Object.keys(yg).sort().forEach(y => {{
+    if (collapsedYears.has(y)) {{
+      cols.push({{type: 'year', year: y, months: yg[y]}});
+    }} else {{
+      yg[y].forEach(m => cols.push({{type: 'month', month: m}}));
+    }}
+  }});
+  return cols;
+}}
+
+function colVal(mData, col) {{
+  if (col.type === 'year') {{
+    let s = 0;
+    col.months.forEach(m => s += (mData[m] || 0));
+    return s;
+  }}
+  return mData[col.month] || 0;
+}}
+
+function toggleYear(year) {{
+  if (collapsedYears.has(year)) collapsedYears.delete(year);
+  else collapsedYears.add(year);
+  onDateChange();
+}}
+
 function buildHeaders(theadId) {{
   const vm = getVisibleMonths();
-  let h = '<tr><th>Nombre</th>';
-  vm.forEach(m => {{ h += '<th>' + MNAMES[m.slice(5)] + ' ' + m.slice(2,4) + '</th>'; }});
-  h += '<th>TOTAL</th></tr>';
-  document.getElementById(theadId).innerHTML = h;
+  const cols = getColumns(vm);
+  const yg = getYearGroups(vm);
+  const years = Object.keys(yg).sort();
+  let yr = '<tr class="year-row"><th></th>';
+  years.forEach(y => {{
+    const cl = collapsedYears.has(y);
+    const span = cl ? 1 : yg[y].length;
+    const arrow = cl ? '&#9654;' : '&#9660;';
+    yr += '<th colspan="' + span + '" class="year-th" onclick="toggleYear(\\'' + y + '\\')">' + arrow + ' ' + y + '</th>';
+  }});
+  yr += '<th></th></tr>';
+  let mr = '<tr><th>Nombre</th>';
+  cols.forEach(c => {{
+    if (c.type === 'year') {{
+      mr += '<th>Total</th>';
+    }} else {{
+      mr += '<th>' + MNAMES[c.month.slice(5)] + '</th>';
+    }}
+  }});
+  mr += '<th>TOTAL</th></tr>';
+  document.getElementById(theadId).innerHTML = yr + mr;
 }}
 
 function updateSummary() {{
@@ -474,6 +535,7 @@ function toggle(id) {{
 
 function buildPersonal() {{
   const vm = getVisibleMonths();
+  const cols = getColumns(vm);
   const gf = document.getElementById('filterGroup').value;
   buildHeaders('pHead');
 
@@ -481,7 +543,7 @@ function buildPersonal() {{
   let html = '';
   let rid = 0;
   const mTotals = {{}};
-  vm.forEach(m => mTotals[m] = 0);
+  cols.forEach((c, i) => mTotals[i] = 0);
   let gt = 0;
 
   users.forEach(user => {{
@@ -492,7 +554,6 @@ function buildPersonal() {{
     const projs = PERSONAL[user];
     const uid = 'p' + (rid++);
 
-    // User totals
     const uM = {{}};
     vm.forEach(m => uM[m] = 0);
     let uTotal = 0;
@@ -504,14 +565,13 @@ function buildPersonal() {{
     if (uTotal === 0) return;
 
     let cells = '';
-    vm.forEach(m => {{ mTotals[m] += uM[m]; cells += '<td>' + fmt(uM[m]) + '</td>'; }});
+    cols.forEach((c, i) => {{ const v = colVal(uM, c); mTotals[i] += v; cells += '<td>' + fmt(v) + '</td>'; }});
     gt += uTotal;
     html += '<tr class="row-l0" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')">' +
       '<span class="arrow">&#9654;</span> ' + user + '</td>' + cells +
       '<td class="total">' + uTotal.toFixed(1) + '</td></tr>\\n';
 
-    // Project rows
     Object.keys(projs).sort().forEach(proj => {{
       const pid = 'p' + (rid++);
       const tasks = projs[proj];
@@ -524,19 +584,21 @@ function buildPersonal() {{
       if (pTotal === 0) return;
 
       let pCells = '';
-      vm.forEach(m => pCells += '<td>' + fmt(pM[m]) + '</td>');
+      cols.forEach(c => pCells += '<td>' + fmt(colVal(pM, c)) + '</td>');
       html += '<tr class="row-l1" data-id="' + pid + '" data-parent="' + uid + '" style="display:none">' +
         '<td onclick="toggle(\\'' + pid + '\\')">' +
         '<span class="arrow">&#9654;</span> ' + proj + '</td>' + pCells +
         '<td class="total">' + pTotal.toFixed(1) + '</td></tr>\\n';
 
-      // Task rows
       Object.keys(tasks).sort().forEach(issKey => {{
         const t = tasks[issKey];
-        let tCells = '';
+        const tM = {{}};
+        vm.forEach(m => tM[m] = t.months[m] || 0);
         let tT = 0;
-        vm.forEach(m => {{ const h = t.months[m] || 0; tT += h; tCells += '<td>' + fmt(h) + '</td>'; }});
+        vm.forEach(m => tT += tM[m]);
         if (tT === 0) return;
+        let tCells = '';
+        cols.forEach(c => tCells += '<td>' + fmt(colVal(tM, c)) + '</td>');
         html += '<tr class="row-l2" data-parent="' + pid + '" style="display:none">' +
           '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
           t.summary.substring(0, 50) + '</td>' + tCells +
@@ -546,7 +608,7 @@ function buildPersonal() {{
   }});
 
   let tCells = '';
-  vm.forEach(m => tCells += '<td class="total">' + mTotals[m].toFixed(1) + '</td>');
+  cols.forEach((c, i) => tCells += '<td class="total">' + mTotals[i].toFixed(1) + '</td>');
   html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
     '<td class="total grand">' + gt.toFixed(1) + '</td></tr>';
   document.getElementById('pBody').innerHTML = html;
@@ -554,13 +616,14 @@ function buildPersonal() {{
 
 function buildNeuro() {{
   const vm = getVisibleMonths();
+  const cols = getColumns(vm);
   buildHeaders('nHead');
 
   const parents = Object.keys(NEURO).sort();
   let html = '';
   let rid = 0;
   const mTotals = {{}};
-  vm.forEach(m => mTotals[m] = 0);
+  cols.forEach((c, i) => mTotals[i] = 0);
   let gt = 0;
 
   parents.forEach(parent => {{
@@ -578,14 +641,13 @@ function buildNeuro() {{
     if (uTotal === 0) return;
 
     let cells = '';
-    vm.forEach(m => {{ mTotals[m] += uM[m]; cells += '<td>' + fmt(uM[m]) + '</td>'; }});
+    cols.forEach((c, i) => {{ const v = colVal(uM, c); mTotals[i] += v; cells += '<td>' + fmt(v) + '</td>'; }});
     gt += uTotal;
     html += '<tr class="row-l0" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')">' +
       '<span class="arrow">&#9654;</span> ' + parent + '</td>' + cells +
       '<td class="total">' + uTotal.toFixed(1) + '</td></tr>\\n';
 
-    // Child rows
     Object.keys(children).sort().forEach(child => {{
       const cid = 'n' + (rid++);
       const tasks = children[child];
@@ -598,19 +660,21 @@ function buildNeuro() {{
       if (cTotal === 0) return;
 
       let cCells = '';
-      vm.forEach(m => cCells += '<td>' + fmt(cM[m]) + '</td>');
+      cols.forEach(c => cCells += '<td>' + fmt(colVal(cM, c)) + '</td>');
       html += '<tr class="row-l1" data-id="' + cid + '" data-parent="' + uid + '" style="display:none">' +
         '<td onclick="toggle(\\'' + cid + '\\')">' +
         '<span class="arrow">&#9654;</span> ' + child + '</td>' + cCells +
         '<td class="total">' + cTotal.toFixed(1) + '</td></tr>\\n';
 
-      // Task rows
       Object.keys(tasks).sort().forEach(issKey => {{
         const t = tasks[issKey];
-        let tCells = '';
+        const tM = {{}};
+        vm.forEach(m => tM[m] = t.months[m] || 0);
         let tT = 0;
-        vm.forEach(m => {{ const h = t.months[m] || 0; tT += h; tCells += '<td>' + fmt(h) + '</td>'; }});
+        vm.forEach(m => tT += tM[m]);
         if (tT === 0) return;
+        let tCells = '';
+        cols.forEach(c => tCells += '<td>' + fmt(colVal(tM, c)) + '</td>');
         html += '<tr class="row-l2" data-parent="' + cid + '" style="display:none">' +
           '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
           t.summary.substring(0, 50) + '</td>' + tCells +
@@ -620,7 +684,7 @@ function buildNeuro() {{
   }});
 
   let tCells = '';
-  vm.forEach(m => tCells += '<td class="total">' + mTotals[m].toFixed(1) + '</td>');
+  cols.forEach((c, i) => tCells += '<td class="total">' + mTotals[i].toFixed(1) + '</td>');
   html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
     '<td class="total grand">' + gt.toFixed(1) + '</td></tr>';
   document.getElementById('nBody').innerHTML = html;
