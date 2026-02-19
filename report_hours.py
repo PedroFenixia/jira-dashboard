@@ -1360,13 +1360,18 @@ function buildLeaves() {{
     const entries = LEAVES[user];
     const uid = 'lv' + (rid++);
     let uDays = 0;
-    entries.forEach(e => uDays += e.days);
+    const typeDays = {{}};
+    entries.forEach(e => {{
+      uDays += e.days;
+      typeDays[e.leave_type] = (typeDays[e.leave_type] || 0) + e.days;
+    }});
     totalDays += uDays;
+    const typeSummary = Object.entries(typeDays).map(([t, d]) => t + ' (' + d + 'd)').join(', ');
 
     html += '<tr class="row-l0" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')" style="text-align:left;position:sticky;left:0;background:var(--card);z-index:1">' +
       '<span class="arrow">&#9654;</span> ' + user + '</td>' +
-      '<td></td><td></td><td></td><td></td><td class="total">' + uDays + '</td></tr>\\n';
+      '<td style="text-align:left;font-size:0.75rem;color:var(--muted)">' + typeSummary + '</td><td></td><td></td><td></td><td class="total">' + uDays + '</td></tr>\\n';
 
     let ch = '';
     entries.forEach(e => {{
