@@ -742,9 +742,9 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 const PERSONAL = {json.dumps(personal_data, ensure_ascii=False)};
 const NEURO = {json.dumps(neuro_data, ensure_ascii=False)};
 const CHANGES = {json.dumps(changes_data, ensure_ascii=False)};
-const COMPARISON = {json.dumps(comparison_data or {{}}, ensure_ascii=False)};
-const LEAVES = {json.dumps(leaves_data or {{}}, ensure_ascii=False)};
-const FSTATS = {json.dumps(factorial_stats or {{}}, ensure_ascii=False)};
+const COMPARISON = {json.dumps(comparison_data or dict(), ensure_ascii=False)};
+const LEAVES = {json.dumps(leaves_data or dict(), ensure_ascii=False)};
+const FSTATS = {json.dumps(factorial_stats or dict(), ensure_ascii=False)};
 const ALL_MONTHS = {json.dumps(months)};
 const USER_GROUPS = {json.dumps(user_groups_map, ensure_ascii=False)};
 const JIRA = "{jira_url}";
