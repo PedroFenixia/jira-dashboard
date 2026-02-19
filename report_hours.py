@@ -483,7 +483,7 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
         year_options += f'<option value="{y}">{y}</option>'
 
     group_items = "".join(
-        f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="buildPersonal()">{g}</label>'
+        f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="debounce(buildPersonal)">{g}</label>'
         for g in group_names
     )
 
@@ -761,6 +761,8 @@ const collapsedYears = new Set();
 
 const sortES = (a, b) => a.localeCompare(b, 'es', {{sensitivity: 'base'}});
 function fmt(h) {{ return h === 0 ? '<span class="zero">-</span>' : h.toFixed(1); }}
+let _dt; function debounce(fn) {{ clearTimeout(_dt); _dt = setTimeout(fn, 80); }}
+const LAZY = {{}};
 
 function onYearChange() {{
   const y = document.getElementById('yearSelect').value;
@@ -820,7 +822,7 @@ function toggleYear(year) {{
   onDateChange();
 }}
 
-function buildHeaders(theadId) {{
+function buildHeaders(theadId, bodyId) {{
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
   const yg = getYearGroups(vm);
@@ -833,7 +835,8 @@ function buildHeaders(theadId) {{
     yr += '<th colspan="' + span + '" class="year-th" onclick="toggleYear(\\'' + y + '\\')">' + arrow + ' ' + y + '</th>';
   }});
   yr += '<th></th></tr>';
-  let mr = '<tr><th>Nombre</th>';
+  const toggle = bodyId ? ' style="cursor:pointer" onclick="toggleAllRows(\\'' + bodyId + '\\')"' : '';
+  let mr = '<tr><th' + toggle + '>Nombre</th>';
   cols.forEach(c => {{
     if (c.type === 'year') {{
       mr += '<th>Total</th>';
@@ -869,6 +872,9 @@ function updateSummary() {{
 function toggle(id) {{
   const row = document.querySelector('tr[data-id="' + id + '"]');
   if (!row) return;
+  if (LAZY[id] && !document.querySelector('tr[data-parent="' + id + '"]')) {{
+    row.insertAdjacentHTML('afterend', LAZY[id]);
+  }}
   row.classList.toggle('open');
   const show = row.classList.contains('open');
   document.querySelectorAll('tr[data-parent="' + id + '"]').forEach(r => {{
@@ -909,7 +915,8 @@ function buildPersonal() {{
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
   const selGroups = getSelectedGroups();
-  buildHeaders('pHead');
+  buildHeaders('pHead', 'pBody');
+  Object.keys(LAZY).forEach(k => {{ if (k.startsWith('p')) delete LAZY[k]; }});
 
   const users = Object.keys(PERSONAL).sort(sortES);
   let html = '';
@@ -944,6 +951,7 @@ function buildPersonal() {{
       '<span class="arrow">&#9654;</span> ' + user + '</td>' + cells +
       '<td class="total">' + uTotal.toFixed(1) + '</td></tr>\\n';
 
+    let ch = '';
     Object.keys(projs).sort().forEach(proj => {{
       const pid = 'p' + (rid++);
       const tasks = projs[proj];
@@ -957,11 +965,12 @@ function buildPersonal() {{
 
       let pCells = '';
       cols.forEach(c => pCells += '<td>' + fmt(colVal(pM, c)) + '</td>');
-      html += '<tr class="row-l1" data-id="' + pid + '" data-parent="' + uid + '" style="display:none">' +
+      ch += '<tr class="row-l1" data-id="' + pid + '" data-parent="' + uid + '" style="display:none">' +
         '<td onclick="toggle(\\'' + pid + '\\')">' +
         '<span class="arrow">&#9654;</span> ' + proj + '</td>' + pCells +
         '<td class="total">' + pTotal.toFixed(1) + '</td></tr>\\n';
 
+      let tch = '';
       Object.keys(tasks).sort().forEach(issKey => {{
         const t = tasks[issKey];
         const tM = {{}};
@@ -971,12 +980,14 @@ function buildPersonal() {{
         if (tT === 0) return;
         let tCells = '';
         cols.forEach(c => tCells += '<td>' + fmt(colVal(tM, c)) + '</td>');
-        html += '<tr class="row-l2" data-parent="' + pid + '" style="display:none">' +
+        tch += '<tr class="row-l2" data-parent="' + pid + '" style="display:none">' +
           '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
           t.summary.substring(0, 50) + '</td>' + tCells +
           '<td>' + tT.toFixed(1) + '</td></tr>\\n';
       }});
+      LAZY[pid] = tch;
     }});
+    LAZY[uid] = ch;
   }});
 
   let tCells = '';
@@ -989,7 +1000,8 @@ function buildPersonal() {{
 function buildNeuro() {{
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
-  buildHeaders('nHead');
+  buildHeaders('nHead', 'nBody');
+  Object.keys(LAZY).forEach(k => {{ if (k.startsWith('n')) delete LAZY[k]; }});
 
   const parents = Object.keys(NEURO).sort(sortES);
   let html = '';
@@ -1020,6 +1032,7 @@ function buildNeuro() {{
       '<span class="arrow">&#9654;</span> ' + parent + '</td>' + cells +
       '<td class="total">' + uTotal.toFixed(1) + '</td></tr>\\n';
 
+    let ch = '';
     Object.keys(children).sort(sortES).forEach(child => {{
       const cid = 'n' + (rid++);
       const tasks = children[child];
@@ -1033,11 +1046,12 @@ function buildNeuro() {{
 
       let cCells = '';
       cols.forEach(c => cCells += '<td>' + fmt(colVal(cM, c)) + '</td>');
-      html += '<tr class="row-l1" data-id="' + cid + '" data-parent="' + uid + '" style="display:none">' +
+      ch += '<tr class="row-l1" data-id="' + cid + '" data-parent="' + uid + '" style="display:none">' +
         '<td onclick="toggle(\\'' + cid + '\\')">' +
         '<span class="arrow">&#9654;</span> ' + child + '</td>' + cCells +
         '<td class="total">' + cTotal.toFixed(1) + '</td></tr>\\n';
 
+      let tch = '';
       Object.keys(tasks).sort().forEach(issKey => {{
         const t = tasks[issKey];
         const tM = {{}};
@@ -1047,12 +1061,14 @@ function buildNeuro() {{
         if (tT === 0) return;
         let tCells = '';
         cols.forEach(c => tCells += '<td>' + fmt(colVal(tM, c)) + '</td>');
-        html += '<tr class="row-l2" data-parent="' + cid + '" style="display:none">' +
+        tch += '<tr class="row-l2" data-parent="' + cid + '" style="display:none">' +
           '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
           t.summary.substring(0, 50) + '</td>' + tCells +
           '<td>' + tT.toFixed(1) + '</td></tr>\\n';
       }});
+      LAZY[cid] = tch;
     }});
+    LAZY[uid] = ch;
   }});
 
   let tCells = '';
@@ -1065,7 +1081,8 @@ function buildNeuro() {{
 function buildChanges() {{
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
-  buildHeaders('chHead');
+  buildHeaders('chHead', 'chBody');
+  Object.keys(LAZY).forEach(k => {{ if (k.startsWith('ch')) delete LAZY[k]; }});
 
   const labels = Object.keys(CHANGES).sort(sortES);
   let html = '';
@@ -1094,6 +1111,7 @@ function buildChanges() {{
       '<span class="arrow">&#9654;</span> ' + label + '</td>' + cells +
       '<td class="total">' + lTotal.toFixed(1) + '</td></tr>\\n';
 
+    let ch = '';
     Object.keys(tasks).sort().forEach(issKey => {{
       const t = tasks[issKey];
       const tM = {{}};
@@ -1103,11 +1121,12 @@ function buildChanges() {{
       if (tT === 0) return;
       let tCells = '';
       cols.forEach(c => tCells += '<td>' + fmt(colVal(tM, c)) + '</td>');
-      html += '<tr class="row-l1" data-parent="' + lid + '" style="display:none">' +
+      ch += '<tr class="row-l1" data-parent="' + lid + '" style="display:none">' +
         '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
         t.summary.substring(0, 50) + ' <small style="color:#94a3b8">(' + t.change_date + ')</small></td>' + tCells +
         '<td class="total">' + tT.toFixed(1) + '</td></tr>\\n';
     }});
+    LAZY[lid] = ch;
   }});
 
   let tCells = '';
@@ -1177,6 +1196,7 @@ function buildComparison() {{
 }}
 
 function buildLeaves() {{
+  Object.keys(LAZY).forEach(k => {{ if (k.startsWith('lv')) delete LAZY[k]; }});
   const users = Object.keys(LEAVES).sort(sortES);
   let html = '';
   let rid = 0;
@@ -1194,8 +1214,9 @@ function buildLeaves() {{
       '<span class="arrow">&#9654;</span> ' + user + '</td>' +
       '<td></td><td></td><td></td><td></td><td class="total">' + uDays + '</td></tr>\\n';
 
+    let ch = '';
     entries.forEach(e => {{
-      html += '<tr class="row-l1" data-parent="' + uid + '" style="display:none">' +
+      ch += '<tr class="row-l1" data-parent="' + uid + '" style="display:none">' +
         '<td style="padding-left:32px;text-align:left;position:sticky;left:0;background:#fafbfc;z-index:1">&nbsp;</td>' +
         '<td style="text-align:left">' + e.leave_type + '</td>' +
         '<td>' + e.start_date + '</td>' +
@@ -1203,6 +1224,7 @@ function buildLeaves() {{
         '<td>' + e.status + '</td>' +
         '<td>' + e.days + '</td></tr>\\n';
     }});
+    LAZY[uid] = ch;
   }});
 
   html += '<tr class="row-totals"><td>TOTAL</td><td></td><td></td><td></td><td></td>' +
@@ -1225,7 +1247,25 @@ function switchTab(tab) {{
   else if (tab === 'leaves') buildLeaves();
 }}
 
+function toggleAllRows(bodyId) {{
+  const el = document.getElementById(bodyId);
+  const hasOpen = el.querySelector('.row-l0.open');
+  if (hasOpen) collapseAll(bodyId);
+  else expandAll(bodyId);
+}}
+
+function injectAll(bodyId) {{
+  const el = document.getElementById(bodyId);
+  el.querySelectorAll('[data-id]').forEach(r => {{
+    const id = r.dataset.id;
+    if (LAZY[id] && !el.querySelector('tr[data-parent="' + id + '"]')) {{
+      r.insertAdjacentHTML('afterend', LAZY[id]);
+    }}
+  }});
+}}
+
 function expandAll(bodyId) {{
+  injectAll(bodyId);
   const el = document.getElementById(bodyId);
   el.querySelectorAll('.row-l0, .row-l1').forEach(r => r.classList.add('open'));
   el.querySelectorAll('tr[data-parent]').forEach(r => r.style.display = '');
@@ -1238,13 +1278,15 @@ function collapseAll(bodyId) {{
 }}
 
 function onDateChange() {{
-  updateSummary();
-  const active = document.querySelector('.tab.active').dataset.tab;
-  if (active === 'personal') buildPersonal();
-  else if (active === 'neuro') buildNeuro();
-  else if (active === 'changes') buildChanges();
-  else if (active === 'compare') buildComparison();
-  else if (active === 'leaves') buildLeaves();
+  debounce(function() {{
+    updateSummary();
+    const active = document.querySelector('.tab.active').dataset.tab;
+    if (active === 'personal') buildPersonal();
+    else if (active === 'neuro') buildNeuro();
+    else if (active === 'changes') buildChanges();
+    else if (active === 'compare') buildComparison();
+    else if (active === 'leaves') buildLeaves();
+  }});
 }}
 
 updateSummary();
