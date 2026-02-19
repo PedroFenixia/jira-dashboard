@@ -63,7 +63,7 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
         f'worklogDate >= "{date_from}-01" AND worklogDate <= "{date_to}-31" '
         f"ORDER BY updated ASC"
     )
-    fields = ["summary", "project", "worklog"]
+    fields = ["summary", "project", "worklog", "customfield_10111", "customfield_10094"]
     print(f"Buscando issues con worklogs entre {date_from} y {date_to}...")
     issues = client._search_issues(jql, fields)
     print(f"  {len(issues)} issues encontradas")
@@ -81,6 +81,14 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
     for idx, issue in enumerate(issues):
         issue_key = issue["key"]
         summary = issue.get("fields", {}).get("summary", "")
+        # Extract Cliente GLOBAL and Neuro360
+        cg_field = issue.get("fields", {}).get("customfield_10111")
+        cliente_global = cg_field.get("value", "Sin cliente") if isinstance(cg_field, dict) else "Sin cliente"
+        n360_field = issue.get("fields", {}).get("customfield_10094")
+        neuro360 = n360_field.get("value", "Sin Neuro360") if isinstance(n360_field, dict) else "Sin Neuro360"
+        n360_child = ""
+        if isinstance(n360_field, dict) and "child" in n360_field:
+            n360_child = n360_field["child"].get("value", "")
 
         worklogs = issue.get("fields", {}).get("worklog", {}).get("worklogs", [])
         wl_total = issue.get("fields", {}).get("worklog", {}).get("total", 0)
@@ -109,6 +117,9 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
             entry = raw[author_name][month_key][issue_key]
             entry["summary"] = summary
             entry["hours"] += seconds / 3600
+            entry["cliente_global"] = cliente_global
+            entry["neuro360"] = neuro360
+            entry["neuro360_child"] = n360_child
             total_wl += 1
 
         if (idx + 1) % 50 == 0:
@@ -184,6 +195,36 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 
     group_names = sorted(set(g for info in groups_info.values() for g in info["groups"])) if groups_info else []
 
+    # Aggregate hours by Cliente GLOBAL and Neuro360
+    client_hours = defaultdict(float)
+    neuro_hours = defaultdict(float)
+    neuro_child_hours = defaultdict(lambda: defaultdict(float))
+    for user in users:
+        for m in months:
+            tasks = raw[user].get(m, {})
+            for key, info in tasks.items():
+                h = info["hours"]
+                cg = info.get("cliente_global", "Sin cliente")
+                n3 = info.get("neuro360", "Sin Neuro360")
+                n3c = info.get("neuro360_child", "")
+                client_hours[cg] += h
+                neuro_hours[n3] += h
+                if n3c:
+                    neuro_child_hours[n3][n3c] += h
+
+    # Sort by hours descending
+    client_sorted = sorted(client_hours.items(), key=lambda x: -x[1])
+    neuro_sorted = sorted(neuro_hours.items(), key=lambda x: -x[1])
+    client_chart = {"labels": [c[0] for c in client_sorted[:20]], "hours": [round(c[1],1) for c in client_sorted[:20]]}
+    neuro_chart = {"labels": [n[0] for n in neuro_sorted[:15]], "hours": [round(n[1],1) for n in neuro_sorted[:15]]}
+    # Build neuro detail table rows
+    neuro_detail_rows = ""
+    for parent, children_dict in sorted(neuro_child_hours.items(), key=lambda x: -neuro_hours.get(x[0], 0)):
+        parent_total = round(neuro_hours.get(parent, 0), 1)
+        neuro_detail_rows += f'<tr class="neuro-parent"><td>{parent}</td><td>{parent_total}</td></tr>'
+        for child_name, child_h in sorted(children_dict.items(), key=lambda x: -x[1]):
+            neuro_detail_rows += f'<tr class="neuro-child"><td>&nbsp;&nbsp;&nbsp;{child_name}</td><td>{round(child_h, 1)}</td></tr>'
+
     month_headers = ""
     for m in months:
         label = MONTH_NAMES.get(m[5:7], m[5:7])
@@ -195,7 +236,8 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Informe de Horas — {date_from} a {date_to}</title>
+<title>Informe de Horas &mdash; {date_from} a {date_to}</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
 <style>
   :root {{
     --bg: #f8fafc; --card: #fff; --text: #1e293b; --muted: #64748b;
@@ -275,11 +317,40 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   .row-totals td:first-child {{ text-align: left; position: sticky; left: 0; background: #f1f5f9; z-index: 1; }}
   .row-totals td.grand {{ color: var(--green); font-size: 0.9rem; }}
 
+  /* Charts section */
+  .charts-section {{
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+    margin-bottom: 28px;
+  }}
+  .chart-card {{
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 20px;
+  }}
+  .chart-card.full-width {{ grid-column: 1 / -1; }}
+  .chart-card h2 {{ font-size: 1.15rem; margin-bottom: 12px; }}
+  .chart-card canvas {{ max-height: 400px; }}
+  .neuro-table {{
+    width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 12px;
+  }}
+  .neuro-table th, .neuro-table td {{
+    padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border);
+  }}
+  .neuro-table th {{
+    background: #f1f5f9; color: var(--muted); font-size: 0.7rem; text-transform: uppercase;
+  }}
+  .neuro-parent td {{ font-weight: 600; background: #fafbfc; }}
+  .neuro-child td {{ color: var(--muted); font-size: 0.78rem; }}
+  .neuro-child td:last-child {{ text-align: right; }}
+  .neuro-parent td:last-child {{ text-align: right; color: #8b5cf6; font-weight: 700; }}
+
   .zero {{ color: #cbd5e1; }}
   .footer {{ text-align: center; color: var(--muted); font-size: 0.7rem; margin-top: 24px; }}
+  @media (max-width: 900px) {{
+    .charts-section {{ grid-template-columns: 1fr; }}
+  }}
   @media print {{
     body {{ padding: 0; font-size: 0.65rem; }}
-    .controls {{ display: none; }}
+    .controls, .charts-section {{ display: none; }}
     .row-month, .row-task {{ display: none !important; }}
   }}
 </style>
@@ -294,6 +365,24 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   <div class="stat"><div class="val">{len(months)}</div><div class="lbl">Meses</div></div>
   <div class="stat"><div class="val">{grand_total:,.1f}</div><div class="lbl">Total horas</div></div>
   <div class="stat"><div class="val">{grand_total / len(months) if months else 0:,.1f}</div><div class="lbl">Media mensual</div></div>
+</div>
+
+<div class="charts-section">
+  <div class="chart-card">
+    <h2>Horas por Cliente GLOBAL</h2>
+    <canvas id="chartCliente"></canvas>
+  </div>
+  <div class="chart-card">
+    <h2>Horas por Neuro360</h2>
+    <canvas id="chartNeuro"></canvas>
+  </div>
+  <div class="chart-card full-width">
+    <h2>Detalle Neuro360 (Padre / Hijo)</h2>
+    <table class="neuro-table">
+      <thead><tr><th>Neuro360</th><th style="text-align:right">Horas</th></tr></thead>
+      <tbody>{neuro_detail_rows}</tbody>
+    </table>
+  </div>
 </div>
 
 <div class="controls">
@@ -318,6 +407,8 @@ const DATA = {json.dumps(js_data, ensure_ascii=False)};
 const MONTHS = {json.dumps(months)};
 const JIRA = "{jira_url}";
 
+const CLIENT_CHART = {json.dumps(client_chart, ensure_ascii=False)};
+const NEURO_CHART = {json.dumps(neuro_chart, ensure_ascii=False)};
 const MNAMES = {json.dumps(MONTH_NAMES)};
 
 function fmt(h) {{ return h === 0 ? '<span class="zero">-</span>' : h.toFixed(1); }}
@@ -444,7 +535,78 @@ function filterUsers(q) {{
   }});
 }}
 
+function renderCharts() {{
+  const tealPalette = [
+    '#0d9488','#14b8a6','#2dd4bf','#5eead4','#99f6e4',
+    '#0f766e','#115e59','#134e4a','#0e7490','#06b6d4',
+    '#22d3ee','#67e8f9','#a5f3fc','#164e63','#155e75',
+    '#0c4a6e','#075985','#0369a1','#0284c7','#0ea5e9'
+  ];
+  const purplePalette = [
+    '#7c3aed','#8b5cf6','#a78bfa','#c4b5fd','#ddd6fe',
+    '#6d28d9','#5b21b6','#4c1d95','#6366f1','#818cf8',
+    '#a5b4fc','#c7d2fe','#e0e7ff','#4338ca','#3730a3'
+  ];
+
+  if (CLIENT_CHART.labels.length > 0) {{
+    new Chart(document.getElementById('chartCliente'), {{
+      type: 'bar',
+      data: {{
+        labels: CLIENT_CHART.labels,
+        datasets: [{{
+          label: 'Horas',
+          data: CLIENT_CHART.hours,
+          backgroundColor: tealPalette.slice(0, CLIENT_CHART.labels.length),
+          borderRadius: 4,
+        }}]
+      }},
+      options: {{
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {{
+          legend: {{ display: false }},
+          tooltip: {{ callbacks: {{ label: ctx => ctx.raw.toFixed(1) + ' h' }} }}
+        }},
+        scales: {{
+          x: {{ title: {{ display: true, text: 'Horas' }}, grid: {{ color: '#f1f5f9' }} }},
+          y: {{ ticks: {{ font: {{ size: 11 }} }}, grid: {{ display: false }} }}
+        }}
+      }}
+    }});
+  }}
+
+  if (NEURO_CHART.labels.length > 0) {{
+    new Chart(document.getElementById('chartNeuro'), {{
+      type: 'bar',
+      data: {{
+        labels: NEURO_CHART.labels,
+        datasets: [{{
+          label: 'Horas',
+          data: NEURO_CHART.hours,
+          backgroundColor: purplePalette.slice(0, NEURO_CHART.labels.length),
+          borderRadius: 4,
+        }}]
+      }},
+      options: {{
+        indexAxis: 'y',
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {{
+          legend: {{ display: false }},
+          tooltip: {{ callbacks: {{ label: ctx => ctx.raw.toFixed(1) + ' h' }} }}
+        }},
+        scales: {{
+          x: {{ title: {{ display: true, text: 'Horas' }}, grid: {{ color: '#f1f5f9' }} }},
+          y: {{ ticks: {{ font: {{ size: 11 }} }}, grid: {{ display: false }} }}
+        }}
+      }}
+    }});
+  }}
+}}
+
 buildTable();
+renderCharts();
 </script>
 </body>
 </html>"""

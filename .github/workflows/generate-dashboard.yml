@@ -33,13 +33,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Generate dashboard
+      - name: Generate hours report
         env:
           JIRA_URL: ${{ secrets.JIRA_URL }}
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
-        run: python main.py --output _site/index.html
+        run: python report_hours.py --output _site/index.html
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
