@@ -74,59 +74,24 @@ class JiraClient:
         return results
 
     def _search_issues(self, jql, fields, expand=None):
-        """Token pagination (v3 search/jql) with fallback to legacy search."""
-        # Try new endpoint first
+        """Token pagination using POST /rest/api/3/search/jql."""
         url = f"{self.config.api_url}/search/jql"
         all_issues = []
         next_token = None
 
-        try:
-            while True:
-                body = {"jql": jql, "fields": fields, "maxResults": 100}
-                if next_token:
-                    body["nextPageToken"] = next_token
-                if expand:
-                    body["expand"] = expand
-
-                resp = self.session.post(url, json=body)
-                if resp.status_code in (404, 405):
-                    # Endpoint not available, use legacy
-                    return self._search_issues_legacy(jql, fields, expand)
-                if resp.status_code == 429:
-                    time.sleep(int(resp.headers.get("Retry-After", 10)))
-                    continue
-                if resp.status_code != 200:
-                    return self._search_issues_legacy(jql, fields, expand)
-
-                data = resp.json()
-                all_issues.extend(data.get("issues", []))
-                next_token = data.get("nextPageToken")
-                if not next_token:
-                    break
-
-        except Exception:
-            return self._search_issues_legacy(jql, fields, expand)
-
-        return all_issues
-
-    def _search_issues_legacy(self, jql, fields, expand=None):
-        """Legacy offset pagination: /rest/api/3/search."""
-        url = f"{self.config.api_url}/search"
-        all_issues = []
-        start = 0
-        max_results = 100
-
         while True:
-            params = {"jql": jql, "fields": ",".join(fields),
-                       "maxResults": max_results, "startAt": start}
+            body = {"jql": jql, "fields": fields, "maxResults": 100}
+            if next_token:
+                body["nextPageToken"] = next_token
             if expand:
-                params["expand"] = expand
-            data = self._request("GET", url, params=params).json()
-            issues = data.get("issues", [])
-            all_issues.extend(issues)
-            if start + max_results >= data.get("total", 0):
+                body["expand"] = expand
+
+            resp = self._request("POST", url, json=body)
+            data = resp.json()
+            all_issues.extend(data.get("issues", []))
+            next_token = data.get("nextPageToken")
+            if not next_token:
                 break
-            start += max_results
 
         return all_issues
 
