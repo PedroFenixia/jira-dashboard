@@ -39,8 +39,6 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
-          STORY_POINTS_FIELD: ${{ secrets.STORY_POINTS_FIELD }}
-          SPRINT_COUNT: ${{ secrets.SPRINT_COUNT }}
         run: python main.py --output _site/index.html
 
       - name: Upload Pages artifact
