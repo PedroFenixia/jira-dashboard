@@ -7,9 +7,10 @@ import requests
 
 
 class FactorialClient:
-    """Client for Factorial HR API (v1 + v2)."""
+    """Client for Factorial HR API (v2025-01-01)."""
 
     BASE_URL = "https://api.factorialhr.com"
+    API_VERSION = "2025-01-01"
 
     def __init__(self, config):
         self.config = config
@@ -56,10 +57,14 @@ class FactorialClient:
         print(f"Factorial: fallo tras {max_retries} reintentos: {url}")
         raise RuntimeError(f"Factorial failed after {max_retries} retries: {url}")
 
+    def _url(self, resource):
+        """Build versioned API URL."""
+        return f"{self.BASE_URL}/api/{self.API_VERSION}/resources/{resource}"
+
     # ── Pagination ───────────────────────────────────────────────
 
     def _paginate(self, url, params=None, limit=100):
-        """Page-based pagination (limit + page params)."""
+        """Page-based pagination. Response: {"data": [...], "meta": {...}}."""
         params = dict(params or {})
         params["limit"] = limit
         page = 1
@@ -68,10 +73,12 @@ class FactorialClient:
         while True:
             params["page"] = page
             data = self._request("GET", url, params=params).json()
-            if not isinstance(data, list):
+            items = data.get("data", [])
+            if not isinstance(items, list):
                 break
-            results.extend(data)
-            if len(data) < limit:
+            results.extend(items)
+            meta = data.get("meta", {})
+            if not meta.get("has_next_page", False) or len(items) < limit:
                 break
             page += 1
 
@@ -80,8 +87,8 @@ class FactorialClient:
     # ── Employees ────────────────────────────────────────────────
 
     def get_employees(self):
-        """GET /api/v1/employees — all employees (active + terminated)."""
-        url = f"{self.BASE_URL}/api/v1/employees"
+        """GET employees — all employees (active + terminated)."""
+        url = self._url("employees/employees")
         employees = self._paginate(url)
         print(f"  {len(employees)} empleados en Factorial")
         return employees
@@ -94,7 +101,7 @@ class FactorialClient:
             email = (emp.get("email") or "").strip().lower()
             if not email:
                 continue
-            full_name = f'{emp.get("first_name", "")} {emp.get("last_name", "")}'.strip()
+            full_name = emp.get("full_name") or f'{emp.get("first_name", "")} {emp.get("last_name", "")}'.strip()
             result[email] = {
                 "id": emp.get("id"),
                 "full_name": full_name,
@@ -107,8 +114,8 @@ class FactorialClient:
     # ── Attendance / Clock-in hours ──────────────────────────────
 
     def get_attendance(self, year, month):
-        """GET /api/v2/attendance — clock-in/out records for a month."""
-        url = f"{self.BASE_URL}/api/v2/attendance"
+        """GET attendance/shifts — clock-in/out records for a month."""
+        url = self._url("attendance/shifts")
         params = {"year": year, "month": month}
         return self._paginate(url, params=params)
 
@@ -133,18 +140,23 @@ class FactorialClient:
                 if not emp_id or not clock_in or not clock_out:
                     continue
                 try:
-                    # Handle both "HH:MM" and ISO timestamp formats
-                    if "T" in clock_in:
+                    # minutes field is available in new API
+                    minutes = rec.get("minutes")
+                    if minutes is not None and minutes > 0:
+                        result[emp_id][month_key] += minutes / 60
+                    elif "T" in clock_in:
                         from datetime import datetime as dt
                         t_in = dt.fromisoformat(clock_in.replace("Z", "+00:00"))
                         t_out = dt.fromisoformat(clock_out.replace("Z", "+00:00"))
                         hours = (t_out - t_in).total_seconds() / 3600
+                        if hours > 0:
+                            result[emp_id][month_key] += hours
                     else:
                         h_in, m_in = map(int, clock_in.split(":"))
                         h_out, m_out = map(int, clock_out.split(":"))
                         hours = (h_out * 60 + m_out - h_in * 60 - m_in) / 60
-                    if hours > 0:
-                        result[emp_id][month_key] += hours
+                        if hours > 0:
+                            result[emp_id][month_key] += hours
                 except (ValueError, TypeError):
                     pass
             m += 1
@@ -157,8 +169,8 @@ class FactorialClient:
     # ── Leaves / Absences ────────────────────────────────────────
 
     def get_leaves(self):
-        """GET /api/v1/time/leaves — all leave records."""
-        url = f"{self.BASE_URL}/api/v1/time/leaves"
+        """GET timeoff/leaves — all leave records."""
+        url = self._url("timeoff/leaves")
         return self._paginate(url)
 
     def get_leaves_in_range(self, date_from, date_to):
@@ -174,11 +186,19 @@ class FactorialClient:
 
         result = defaultdict(list)
         for leave in all_leaves:
-            status = (leave.get("status") or "").lower()
-            if status not in ("approved", "pending"):
-                continue
-            start = leave.get("start_date") or leave.get("start_on") or ""
-            end = leave.get("end_date") or leave.get("finish_on") or ""
+            # New API uses 'approved' boolean; old used 'status' string
+            approved = leave.get("approved")
+            if approved is not None:
+                if not approved:
+                    continue
+                status = "approved"
+            else:
+                status = (leave.get("status") or "").lower()
+                if status not in ("approved", "pending"):
+                    continue
+
+            start = leave.get("start_on") or leave.get("start_date") or ""
+            end = leave.get("finish_on") or leave.get("end_date") or ""
             if not start:
                 continue
             if end >= range_start and start <= range_end:
