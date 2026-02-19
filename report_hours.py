@@ -153,11 +153,11 @@ def _search_jql_direct(client, jql, fields):
     return all_issues, 200, ""
 
 
-def fetch_client_changes(client, date_from, date_to):
+def fetch_client_changes(client, date_from, date_to, issue_keys_with_client=None):
     """Find issues where Cliente GLOBAL was changed, then fetch changelogs.
 
-    Tries JQL 'changed' operator first. If unsupported, falls back to searching
-    issues with customfield_10111 set and checking changelogs individually.
+    Tries JQL 'changed' operator first. If unsupported, falls back to JQL
+    field queries, then to issue keys from worklogs as last resort.
     Returns: {issue_key: [{date, from_val, to_val}, ...]}
     """
     to_y, to_m = int(date_to[:4]), int(date_to[5:7])
@@ -184,17 +184,29 @@ def fetch_client_changes(client, date_from, date_to):
         else:
             print(f"  JQL 'changed' no soportado (HTTP {status})")
 
-    # Fallback: search issues with the field set, then filter by changelog
+    # Fallback: search issues with the field set
     if issues is None:
-        print("  Usando fallback: issues con Cliente GLOBAL asignado...")
-        fallback_jql = f'customfield_10111 is not EMPTY {wl_filter}'
-        result, status, err = _search_jql_direct(client, fallback_jql, ["summary"])
-        if result is not None:
-            issues = result
-            print(f"  {len(issues)} issues con Cliente GLOBAL asignado")
-        else:
-            print(f"  Fallback también falló (HTTP {status}): {err}")
-            return {}
+        for fallback_jql in [
+            f'"Cliente GLOBAL" is not EMPTY {wl_filter}',
+            f'customfield_10111 is not EMPTY {wl_filter}',
+        ]:
+            result, status, err = _search_jql_direct(client, fallback_jql, ["summary"])
+            if result is not None and len(result) > 0:
+                issues = result
+                print(f"  Fallback JQL OK: {len(issues)} issues con Cliente GLOBAL")
+                break
+            elif result is not None:
+                print(f"  Fallback JQL OK pero 0 resultados")
+
+    # Last resort: use issue keys from worklogs that have cliente_global set
+    if (issues is None or len(issues) == 0) and issue_keys_with_client:
+        keys = list(issue_keys_with_client)
+        print(f"  Usando {len(keys)} issue keys de worklogs como fallback")
+        issues = [{"key": k} for k in keys]
+
+    if not issues:
+        print("  No se encontraron issues para revisar")
+        return {}
 
     # Fetch changelogs and filter for customfield_10111 changes
     MAX_CHANGELOGS = 500
@@ -1335,8 +1347,19 @@ def main():
     if not raw:
         print("Aviso: No se encontraron worklogs en el rango de fechas. Generando informe vacío.")
 
+    # Collect issue keys with cliente_global set (for fallback in fetch_client_changes)
+    keys_with_client = set()
+    for user_data in raw.values():
+        for month_data in user_data.values():
+            for key, info in month_data.items():
+                if info.get("cliente_global", "Sin cliente") != "Sin cliente":
+                    keys_with_client.add(key)
+
     # Fetch client field changes (uses JQL server-side filter)
-    client_changes = fetch_client_changes(client, args.date_from, args.date_to)
+    client_changes = fetch_client_changes(
+        client, args.date_from, args.date_to,
+        issue_keys_with_client=keys_with_client
+    )
 
     # Factorial integration (optional)
     comparison_data = None
