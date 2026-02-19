@@ -228,6 +228,11 @@ def fetch_client_changes(client, date_from, date_to, issue_keys_with_client=None
                 if item.get("fieldId") == "customfield_10111" or item.get("field") == "Cliente GLOBAL":
                     from_val = item.get("fromString", "Sin cliente") or "Sin cliente"
                     to_val = item.get("toString", "Sin cliente") or "Sin cliente"
+                    # Clean "Parent values: NAME(ID)" format from cascading selects
+                    from_val = re.sub(r"^Parent values:\s*", "", from_val)
+                    from_val = re.sub(r"\(\d+\)$", "", from_val).strip()
+                    to_val = re.sub(r"^Parent values:\s*", "", to_val)
+                    to_val = re.sub(r"\(\d+\)$", "", to_val).strip()
                     issue_changes.append({
                         "date": created[:10],
                         "from": from_val,
