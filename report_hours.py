@@ -132,15 +132,38 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
     return raw
 
 
-def fetch_client_changes(client, issue_keys):
-    """Fetch changelogs and find Cliente GLOBAL (customfield_10111) changes.
+def fetch_client_changes(client, date_from, date_to):
+    """Find issues where Cliente GLOBAL was changed via JQL, then fetch changelogs.
 
+    Uses JQL 'changed' operator to filter server-side, avoiding per-issue API calls.
     Returns: {issue_key: [{date, from_val, to_val}, ...]}
     """
+    to_y, to_m = int(date_to[:4]), int(date_to[5:7])
+    last_day = calendar.monthrange(to_y, to_m)[1]
+
+    jql = (
+        f'"Cliente GLOBAL" changed '
+        f'AND worklogDate >= "{date_from}-01" '
+        f'AND worklogDate <= "{date_to}-{last_day:02d}" '
+        f'ORDER BY updated ASC'
+    )
+    print("Buscando issues con cambios de Cliente GLOBAL (JQL)...")
+    try:
+        issues = client._search_issues(jql, fields=["summary"])
+    except Exception:
+        # Fallback: try cf[10111] syntax
+        try:
+            jql_alt = jql.replace('"Cliente GLOBAL" changed', 'cf[10111] changed')
+            issues = client._search_issues(jql_alt, fields=["summary"])
+        except Exception:
+            print("  No se pudo buscar por cambios de campo. Saltando.")
+            return {}
+
+    print(f"  {len(issues)} issues con cambios encontradas")
+
     changes = {}
-    total = len(issue_keys)
-    print(f"Buscando cambios de Cliente GLOBAL en {total} issues...")
-    for idx, key in enumerate(issue_keys):
+    for idx, issue in enumerate(issues):
+        key = issue["key"]
         try:
             histories = client.get_issue_changelog(key)
         except Exception:
@@ -160,9 +183,9 @@ def fetch_client_changes(client, issue_keys):
         if issue_changes:
             changes[key] = issue_changes
         if (idx + 1) % 50 == 0:
-            print(f"  {idx + 1}/{total} issues revisadas...")
+            print(f"  {idx + 1}/{len(issues)} changelogs revisados...")
 
-    print(f"  {len(changes)} issues con cambios de Cliente GLOBAL")
+    print(f"  {len(changes)} issues con cambios de Cliente GLOBAL confirmados")
     return changes
 
 
@@ -914,12 +937,8 @@ def main():
     if not raw:
         print("Aviso: No se encontraron worklogs en el rango de fechas. Generando informe vacío.")
 
-    # Collect unique issue keys and fetch client field changes
-    issue_keys = set()
-    for user_data in raw.values():
-        for month_data in user_data.values():
-            issue_keys.update(month_data.keys())
-    client_changes = fetch_client_changes(client, sorted(issue_keys)) if issue_keys else {}
+    # Fetch client field changes (uses JQL server-side filter)
+    client_changes = fetch_client_changes(client, args.date_from, args.date_to)
 
     if args.format == "csv":
         out = args.output or f"output/horas_{args.date_from}_{args.date_to}.csv"
