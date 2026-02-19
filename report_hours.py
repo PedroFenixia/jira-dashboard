@@ -330,7 +330,10 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
         from_options += f'<option value="{m}"{from_sel}>{label}</option>'
         to_options += f'<option value="{m}"{to_sel}>{label}</option>'
 
-    group_options = "".join(f'<option value="{g}">{g}</option>' for g in group_names)
+    group_items = "".join(
+        f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="buildPersonal()">{g}</label>'
+        for g in group_names
+    )
 
     html = f"""<!DOCTYPE html>
 <html lang="es">
@@ -405,6 +408,30 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
     background: var(--card); cursor: pointer; font-size: 0.8rem; color: var(--text);
   }}
   .controls button:hover {{ background: #f1f5f9; }}
+
+  /* Multi-select dropdown */
+  .multi-select {{
+    position: relative; display: inline-block; min-width: 220px;
+  }}
+  .multi-select .ms-btn {{
+    padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 0.8rem; background: var(--card); color: var(--text); cursor: pointer;
+    width: 100%; text-align: left; display: flex; justify-content: space-between; align-items: center;
+  }}
+  .multi-select .ms-btn .ms-arrow {{ font-size: 0.6rem; margin-left: 8px; }}
+  .multi-select .ms-panel {{
+    display: none; position: absolute; top: 100%; left: 0; right: 0;
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1); z-index: 20; max-height: 240px;
+    overflow-y: auto; margin-top: 2px;
+  }}
+  .multi-select.open .ms-panel {{ display: block; }}
+  .multi-select .ms-item {{
+    padding: 6px 12px; font-size: 0.8rem; cursor: pointer; display: flex;
+    align-items: center; gap: 8px;
+  }}
+  .multi-select .ms-item:hover {{ background: #f1f5f9; }}
+  .multi-select .ms-item input {{ margin: 0; cursor: pointer; }}
 
   /* Table */
   .table-wrap {{
@@ -481,10 +508,14 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 
 <div id="tabPersonal" class="tab-content active">
   <div class="controls">
-    <select id="filterGroup" onchange="buildPersonal()">
-      <option value="">Todos los grupos</option>
-      {group_options}
-    </select>
+    <div class="multi-select" id="groupSelect">
+      <button type="button" class="ms-btn" onclick="document.getElementById('groupSelect').classList.toggle('open')">
+        <span id="groupLabel">Todos los grupos</span><span class="ms-arrow">&#9660;</span>
+      </button>
+      <div class="ms-panel">
+        {group_items}
+      </div>
+    </div>
     <button onclick="expandAll('pBody')">Expandir todo</button>
     <button onclick="collapseAll('pBody')">Colapsar todo</button>
   </div>
@@ -649,10 +680,29 @@ function toggle(id) {{
   }});
 }}
 
+function getSelectedGroups() {{
+  const checks = document.querySelectorAll('#groupSelect input[type=checkbox]:checked');
+  return Array.from(checks).map(c => c.value);
+}}
+
+function updateGroupLabel() {{
+  const sel = getSelectedGroups();
+  const lbl = document.getElementById('groupLabel');
+  if (sel.length === 0) lbl.textContent = 'Todos los grupos';
+  else if (sel.length <= 2) lbl.textContent = sel.join(', ');
+  else lbl.textContent = sel.length + ' grupos';
+}}
+
+document.addEventListener('click', function(e) {{
+  const ms = document.getElementById('groupSelect');
+  if (ms && !ms.contains(e.target)) ms.classList.remove('open');
+}});
+
 function buildPersonal() {{
+  updateGroupLabel();
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
-  const gf = document.getElementById('filterGroup').value;
+  const selGroups = getSelectedGroups();
   buildHeaders('pHead');
 
   const users = Object.keys(PERSONAL).sort();
@@ -663,9 +713,9 @@ function buildPersonal() {{
   let gt = 0;
 
   users.forEach(user => {{
-    if (gf) {{
+    if (selGroups.length > 0) {{
       const ug = USER_GROUPS[user] || [];
-      if (!ug.includes(gf)) return;
+      if (!selGroups.some(g => ug.includes(g))) return;
     }}
     const projs = PERSONAL[user];
     const uid = 'p' + (rid++);
