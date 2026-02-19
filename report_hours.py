@@ -165,49 +165,74 @@ def generate_csv(raw, months, output_path):
 
 
 def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output_path):
-    """Generate interactive HTML with collapsible user → month → task rows."""
+    """Generate interactive HTML with two tabs: Personal and Neuro360."""
     users = sorted(raw.keys())
 
-    # Prepare JSON data for JS
-    js_data = {}
+    # Build personal data: user -> project -> issue_key -> {summary, months}
+    personal_data = {}
     for user in users:
-        user_months = {}
+        projects = {}
         for m in months:
             tasks = raw[user].get(m, {})
-            task_list = []
-            for key, info in sorted(tasks.items()):
-                task_list.append({
-                    "key": key,
-                    "summary": info["summary"],
-                    "hours": round(info["hours"], 1),
-                })
-            user_months[m] = {
-                "tasks": task_list,
-                "total": round(sum(t["hours"] for t in task_list), 1),
-            }
-        js_data[user] = user_months
+            for key, info in tasks.items():
+                proj = key.split("-")[0] if "-" in key else "OTHER"
+                if proj not in projects:
+                    projects[proj] = {}
+                if key not in projects[proj]:
+                    projects[proj][key] = {"summary": info["summary"], "months": {}}
+                projects[proj][key]["months"][m] = round(
+                    projects[proj][key]["months"].get(m, 0) + info["hours"], 1
+                )
+        if projects:
+            personal_data[user] = projects
 
-    # Build user → groups mapping (displayName → [group_names])
+    # Build neuro data: parent -> child -> issue_key -> {summary, months}
+    neuro_data = {}
+    for user in users:
+        for m in months:
+            tasks = raw[user].get(m, {})
+            for key, info in tasks.items():
+                parent = info.get("neuro360", "Sin Neuro360")
+                child = info.get("neuro360_child", "") or "Sin subcategoría"
+                if parent not in neuro_data:
+                    neuro_data[parent] = {}
+                if child not in neuro_data[parent]:
+                    neuro_data[parent][child] = {}
+                if key not in neuro_data[parent][child]:
+                    neuro_data[parent][child][key] = {"summary": info["summary"], "months": {}}
+                neuro_data[parent][child][key]["months"][m] = round(
+                    neuro_data[parent][child][key]["months"].get(m, 0) + info["hours"], 1
+                )
+
+    # Build user -> groups mapping
     user_groups_map = {}
     if groups_info:
         for aid, info in groups_info.items():
             name = info["displayName"]
-            if name in js_data:
+            if name in personal_data:
                 user_groups_map[name] = info["groups"]
-
-    # Compute totals for summary cards
-    grand_total = 0
-    for user in users:
-        for m in months:
-            grand_total += js_data[user][m]["total"]
 
     group_names = sorted(set(g for info in groups_info.values() for g in info["groups"])) if groups_info else []
 
-    month_headers = ""
+    # Grand total
+    grand_total = 0
+    for user in users:
+        for m in months:
+            for info in raw[user].get(m, {}).values():
+                grand_total += info["hours"]
+    grand_total = round(grand_total, 1)
+
+    # Month selector options
+    from_options = ""
+    to_options = ""
     for m in months:
-        label = MONTH_NAMES.get(m[5:7], m[5:7])
-        year_short = m[2:4]
-        month_headers += f"<th>{label} {year_short}</th>"
+        label = MONTH_NAMES.get(m[5:7], m[5:7]) + " " + m[:4]
+        from_sel = " selected" if m == months[0] else ""
+        to_sel = " selected" if m == months[-1] else ""
+        from_options += f'<option value="{m}"{from_sel}>{label}</option>'
+        to_options += f'<option value="{m}"{to_sel}>{label}</option>'
+
+    group_options = "".join(f'<option value="{g}">{g}</option>' for g in group_names)
 
     html = f"""<!DOCTYPE html>
 <html lang="es">
@@ -219,6 +244,7 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   :root {{
     --bg: #f8fafc; --card: #fff; --text: #1e293b; --muted: #64748b;
     --border: #e2e8f0; --blue: #3b82f6; --green: #22c55e; --amber: #f59e0b;
+    --purple: #8b5cf6;
   }}
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
   body {{
@@ -227,12 +253,22 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
     max-width: 1600px; margin: 0 auto;
   }}
   h1 {{ font-size: 1.5rem; margin-bottom: 4px; }}
-  .meta {{ color: var(--muted); font-size: 0.85rem; margin-bottom: 8px; }}
-  .groups {{ color: var(--muted); font-size: 0.8rem; margin-bottom: 20px; }}
-  .groups span {{ background: #e0e7ff; color: #4338ca; padding: 2px 8px;
-                  border-radius: 4px; font-size: 0.7rem; margin-right: 4px; }}
+  .meta {{ color: var(--muted); font-size: 0.85rem; margin-bottom: 20px; }}
+
+  /* Filters bar */
+  .filters {{
+    display: flex; gap: 12px; align-items: center; margin-bottom: 16px; flex-wrap: wrap;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px;
+  }}
+  .filters label {{ font-size: 0.8rem; color: var(--muted); font-weight: 600; }}
+  .filters select {{
+    padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 0.8rem; background: var(--card); color: var(--text); cursor: pointer;
+  }}
+
+  /* Summary cards */
   .summary {{
-    display: flex; gap: 16px; margin-bottom: 24px; flex-wrap: wrap;
+    display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
   }}
   .stat {{
     background: var(--card); border: 1px solid var(--border);
@@ -240,8 +276,26 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   }}
   .stat .val {{ font-size: 1.75rem; font-weight: 700; color: var(--blue); }}
   .stat .lbl {{ font-size: 0.75rem; color: var(--muted); text-transform: uppercase; }}
+
+  /* Tabs */
+  .tabs {{
+    display: flex; gap: 0; margin-bottom: 0; border-bottom: 2px solid var(--border);
+  }}
+  .tab {{
+    padding: 10px 28px; border: none; background: none; cursor: pointer;
+    font-size: 0.9rem; color: var(--muted); border-bottom: 2px solid transparent;
+    margin-bottom: -2px; transition: all 0.2s;
+  }}
+  .tab.active {{ color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }}
+  .tab:hover {{ color: var(--text); }}
+
+  /* Tab content */
+  .tab-content {{ display: none; padding-top: 16px; }}
+  .tab-content.active {{ display: block; }}
+
+  /* Controls per tab */
   .controls {{
-    display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
+    display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;
   }}
   .controls select {{
     padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
@@ -253,6 +307,8 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
     background: var(--card); cursor: pointer; font-size: 0.8rem; color: var(--text);
   }}
   .controls button:hover {{ background: #f1f5f9; }}
+
+  /* Table */
   .table-wrap {{
     overflow-x: auto; background: var(--card);
     border: 1px solid var(--border); border-radius: 10px;
@@ -265,232 +321,341 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
        text-transform: uppercase; position: sticky; top: 0; z-index: 3; }}
   th:first-child {{ text-align: left; position: sticky; left: 0; z-index: 4; }}
 
-  /* User row */
-  .row-user td {{ font-weight: 600; cursor: pointer; }}
-  .row-user td:first-child {{ text-align: left; position: sticky; left: 0; background: var(--card); z-index: 1; }}
-  .row-user:hover td {{ background: #f0f7ff; }}
-  .row-user td .arrow {{ display: inline-block; width: 16px; transition: transform 0.2s; }}
-  .row-user.open td .arrow {{ transform: rotate(90deg); }}
-  .row-user td.total {{ color: var(--blue); }}
+  /* Level 0 rows (user / neuro parent) */
+  .row-l0 td {{ font-weight: 600; }}
+  .row-l0 td:first-child {{ cursor: pointer; text-align: left; position: sticky; left: 0; background: var(--card); z-index: 1; }}
+  .row-l0:hover td {{ background: #f0f7ff; }}
+  .row-l0 .arrow {{ display: inline-block; width: 16px; transition: transform 0.2s; }}
+  .row-l0.open .arrow {{ transform: rotate(90deg); }}
+  .row-l0 td.total {{ color: var(--blue); }}
 
-  /* Month sub-row */
-  .row-month {{ display: none; }}
-  .row-month td {{ font-size: 0.78rem; background: #fafbfc; cursor: pointer; }}
-  .row-month td:first-child {{ text-align: left; padding-left: 32px; position: sticky; left: 0; background: #fafbfc; z-index: 1; }}
-  .row-month:hover td {{ background: #f5f5f5; }}
-  .row-month td .arrow {{ display: inline-block; width: 14px; transition: transform 0.2s; font-size: 0.7rem; }}
-  .row-month.open td .arrow {{ transform: rotate(90deg); }}
-  .row-month td.total {{ color: var(--amber); font-weight: 600; }}
+  /* Level 1 rows (project / neuro child) */
+  .row-l1 td {{ font-size: 0.78rem; background: #fafbfc; }}
+  .row-l1 td:first-child {{ cursor: pointer; text-align: left; padding-left: 32px; position: sticky; left: 0; background: #fafbfc; z-index: 1; }}
+  .row-l1:hover td {{ background: #f5f5f5; }}
+  .row-l1 .arrow {{ display: inline-block; width: 14px; transition: transform 0.2s; font-size: 0.7rem; }}
+  .row-l1.open .arrow {{ transform: rotate(90deg); }}
+  .row-l1 td.total {{ color: var(--amber); font-weight: 600; }}
 
-  /* Task sub-row */
-  .row-task {{ display: none; }}
-  .row-task td {{ font-size: 0.75rem; background: #f8f9fa; color: var(--muted); }}
-  .row-task td:first-child {{ text-align: left; padding-left: 52px; position: sticky; left: 0; background: #f8f9fa; z-index: 1; }}
-  .row-task td a {{ color: var(--blue); text-decoration: none; }}
-  .row-task td a:hover {{ text-decoration: underline; }}
+  /* Level 2 rows (task) */
+  .row-l2 td {{ font-size: 0.75rem; background: #f8f9fa; color: var(--muted); }}
+  .row-l2 td:first-child {{ text-align: left; padding-left: 52px; position: sticky; left: 0; background: #f8f9fa; z-index: 1; }}
+  .row-l2 td a {{ color: var(--blue); text-decoration: none; }}
+  .row-l2 td a:hover {{ text-decoration: underline; }}
 
   /* Totals row */
   .row-totals td {{ background: #f1f5f9; border-top: 2px solid var(--border); font-weight: 700; }}
   .row-totals td:first-child {{ text-align: left; position: sticky; left: 0; background: #f1f5f9; z-index: 1; }}
   .row-totals td.grand {{ color: var(--green); font-size: 0.9rem; }}
 
-
   .zero {{ color: #cbd5e1; }}
   .footer {{ text-align: center; color: var(--muted); font-size: 0.7rem; margin-top: 24px; }}
   @media print {{
     body {{ padding: 0; font-size: 0.65rem; }}
-    .controls {{ display: none; }}
-    .row-month, .row-task {{ display: none !important; }}
+    .controls, .filters, .tabs {{ display: none; }}
+    .row-l1, .row-l2 {{ display: none !important; }}
   }}
 </style>
 </head>
 <body>
 <h1>Informe de Horas Reportadas</h1>
-<div class="meta">{date_from} — {date_to} &middot; Generado: {datetime.now().strftime("%Y-%m-%d %H:%M")}</div>
-<div class="groups">Grupos: {"".join(f'<span>{g}</span>' for g in group_names) if group_names else '<span>Todos</span>'}</div>
+<div class="meta">Generado: {datetime.now().strftime("%Y-%m-%d %H:%M")}</div>
 
-<div class="summary">
-  <div class="stat"><div class="val">{len(users)}</div><div class="lbl">Usuarios</div></div>
-  <div class="stat"><div class="val">{len(months)}</div><div class="lbl">Meses</div></div>
-  <div class="stat"><div class="val">{grand_total:,.1f}</div><div class="lbl">Total horas</div></div>
-  <div class="stat"><div class="val">{grand_total / len(months) if months else 0:,.1f}</div><div class="lbl">Media mensual</div></div>
+<div class="filters">
+  <label>Desde:</label>
+  <select id="dateFrom" onchange="onDateChange()">{from_options}</select>
+  <label>Hasta:</label>
+  <select id="dateTo" onchange="onDateChange()">{to_options}</select>
 </div>
 
+<div class="summary" id="summaryCards"></div>
 
-<div class="controls">
-  <select id="filterGroup" onchange="applyFilters()">
-    <option value="">Todos los grupos</option>
-    {"".join(f'<option value="{g}">{g}</option>' for g in group_names)}
-  </select>
-  <select id="filterUser" onchange="applyFilters()">
-    <option value="">Todos los usuarios</option>
-    {"".join(f'<option value="{u}">{u}</option>' for u in users)}
-  </select>
-  <button onclick="expandAll()">Expandir todo</button>
-  <button onclick="collapseAll()">Colapsar todo</button>
+<div class="tabs">
+  <button class="tab active" data-tab="personal" onclick="switchTab('personal')">Por Persona</button>
+  <button class="tab" data-tab="neuro" onclick="switchTab('neuro')">Por Neuro360</button>
 </div>
 
-<div class="table-wrap">
-<table>
-<thead>
-<tr><th>Nombre</th>{month_headers}<th>TOTAL</th></tr>
-</thead>
-<tbody id="tbody"></tbody>
-</table>
+<div id="tabPersonal" class="tab-content active">
+  <div class="controls">
+    <select id="filterGroup" onchange="buildPersonal()">
+      <option value="">Todos los grupos</option>
+      {group_options}
+    </select>
+    <button onclick="expandAll('pBody')">Expandir todo</button>
+    <button onclick="collapseAll('pBody')">Colapsar todo</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead id="pHead"></thead>
+      <tbody id="pBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div id="tabNeuro" class="tab-content">
+  <div class="controls">
+    <button onclick="expandAll('nBody')">Expandir todo</button>
+    <button onclick="collapseAll('nBody')">Colapsar todo</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead id="nHead"></thead>
+      <tbody id="nBody"></tbody>
+    </table>
+  </div>
 </div>
 
 <div class="footer">Generado por jira-dashboard/report_hours.py</div>
 
 <script>
-const DATA = {json.dumps(js_data, ensure_ascii=False)};
-const MONTHS = {json.dumps(months)};
-const JIRA = "{jira_url}";
+const PERSONAL = {json.dumps(personal_data, ensure_ascii=False)};
+const NEURO = {json.dumps(neuro_data, ensure_ascii=False)};
+const ALL_MONTHS = {json.dumps(months)};
 const USER_GROUPS = {json.dumps(user_groups_map, ensure_ascii=False)};
-
+const JIRA = "{jira_url}";
 const MNAMES = {json.dumps(MONTH_NAMES)};
 
 function fmt(h) {{ return h === 0 ? '<span class="zero">-</span>' : h.toFixed(1); }}
 
-function buildTable() {{
-  const tbody = document.getElementById('tbody');
-  let html = '';
-  const users = Object.keys(DATA).sort();
-  const monthTotals = {{}};
-  MONTHS.forEach(m => monthTotals[m] = 0);
-  let grandTotal = 0;
+function getVisibleMonths() {{
+  const f = document.getElementById('dateFrom').value;
+  const t = document.getElementById('dateTo').value;
+  return ALL_MONTHS.filter(m => m >= f && m <= t);
+}}
 
-  users.forEach((user, ui) => {{
-    const ud = DATA[user];
-    let userTotal = 0;
-    // User row
-    let cells = '';
-    MONTHS.forEach(m => {{
-      const h = ud[m] ? ud[m].total : 0;
-      userTotal += h;
-      monthTotals[m] += h;
-      cells += `<td>${{fmt(h)}}</td>`;
-    }});
-    grandTotal += userTotal;
-    html += `<tr class="row-user" data-user="${{ui}}" onclick="toggleUser(${{ui}})">` +
-      `<td><span class="arrow">&#9654;</span> ${{user}}</td>${{cells}}` +
-      `<td class="total">${{userTotal.toFixed(1)}}</td></tr>\\n`;
+function buildHeaders(theadId) {{
+  const vm = getVisibleMonths();
+  let h = '<tr><th>Nombre</th>';
+  vm.forEach(m => {{ h += '<th>' + MNAMES[m.slice(5)] + ' ' + m.slice(2,4) + '</th>'; }});
+  h += '<th>TOTAL</th></tr>';
+  document.getElementById(theadId).innerHTML = h;
+}}
 
-    // Month sub-rows
-    MONTHS.forEach((m, mi) => {{
-      const md = ud[m];
-      if (!md || md.total === 0) return;
-      const label = MNAMES[m.slice(5)] + ' ' + m.slice(2,4);
-      const tasks = md.tasks || [];
-      // Month row: only shows total in the corresponding month column
-      let mCells = '';
-      MONTHS.forEach((m2, mi2) => {{
-        mCells += mi2 === mi ? `<td class="total">${{md.total.toFixed(1)}}</td>` : '<td></td>';
+function updateSummary() {{
+  const vm = getVisibleMonths();
+  let totalHours = 0;
+  let totalUsers = new Set();
+  Object.keys(PERSONAL).forEach(user => {{
+    let userH = 0;
+    Object.values(PERSONAL[user]).forEach(proj => {{
+      Object.values(proj).forEach(t => {{
+        vm.forEach(m => {{ userH += (t.months[m] || 0); }});
       }});
-      html += `<tr class="row-month" data-user="${{ui}}" data-month="${{ui}}-${{mi}}" onclick="toggleMonth(${{ui}},${{mi}})">` +
-        `<td><span class="arrow">&#9654;</span> ${{label}} (${{tasks.length}} tareas)</td>${{mCells}}` +
-        `<td class="total">${{md.total.toFixed(1)}}</td></tr>\\n`;
+    }});
+    if (userH > 0) totalUsers.add(user);
+    totalHours += userH;
+  }});
+  document.getElementById('summaryCards').innerHTML =
+    '<div class="stat"><div class="val">' + totalUsers.size + '</div><div class="lbl">Usuarios</div></div>' +
+    '<div class="stat"><div class="val">' + vm.length + '</div><div class="lbl">Meses</div></div>' +
+    '<div class="stat"><div class="val">' + totalHours.toFixed(1) + '</div><div class="lbl">Total horas</div></div>' +
+    '<div class="stat"><div class="val">' + (vm.length > 0 ? (totalHours / vm.length).toFixed(1) : '0') + '</div><div class="lbl">Media mensual</div></div>';
+}}
 
-      // Task sub-rows
-      tasks.forEach(t => {{
-        let tCells = '';
-        MONTHS.forEach((m2, mi2) => {{
-          tCells += mi2 === mi ? `<td>${{t.hours.toFixed(1)}}</td>` : '<td></td>';
+function toggle(id) {{
+  const row = document.querySelector('tr[data-id="' + id + '"]');
+  if (!row) return;
+  row.classList.toggle('open');
+  const show = row.classList.contains('open');
+  document.querySelectorAll('tr[data-parent="' + id + '"]').forEach(r => {{
+    r.style.display = show ? '' : 'none';
+    if (!show) {{
+      r.classList.remove('open');
+      const cid = r.dataset.id;
+      if (cid) {{
+        document.querySelectorAll('tr[data-parent="' + cid + '"]').forEach(gc => {{
+          gc.style.display = 'none';
+          gc.classList.remove('open');
         }});
-        html += `<tr class="row-task" data-month="${{ui}}-${{mi}}">` +
-          `<td><a href="${{JIRA}}/browse/${{t.key}}" target="_blank">${{t.key}}</a> ${{t.summary.substring(0,60)}}</td>${{tCells}}` +
-          `<td>${{t.hours.toFixed(1)}}</td></tr>\\n`;
+      }}
+    }}
+  }});
+}}
+
+function buildPersonal() {{
+  const vm = getVisibleMonths();
+  const gf = document.getElementById('filterGroup').value;
+  buildHeaders('pHead');
+
+  const users = Object.keys(PERSONAL).sort();
+  let html = '';
+  let rid = 0;
+  const mTotals = {{}};
+  vm.forEach(m => mTotals[m] = 0);
+  let gt = 0;
+
+  users.forEach(user => {{
+    if (gf) {{
+      const ug = USER_GROUPS[user] || [];
+      if (!ug.includes(gf)) return;
+    }}
+    const projs = PERSONAL[user];
+    const uid = 'p' + (rid++);
+
+    // User totals
+    const uM = {{}};
+    vm.forEach(m => uM[m] = 0);
+    let uTotal = 0;
+    Object.values(projs).forEach(tasks => {{
+      Object.values(tasks).forEach(t => {{
+        vm.forEach(m => {{ const h = t.months[m] || 0; uM[m] += h; uTotal += h; }});
+      }});
+    }});
+    if (uTotal === 0) return;
+
+    let cells = '';
+    vm.forEach(m => {{ mTotals[m] += uM[m]; cells += '<td>' + fmt(uM[m]) + '</td>'; }});
+    gt += uTotal;
+    html += '<tr class="row-l0" data-id="' + uid + '">' +
+      '<td onclick="toggle(\\'' + uid + '\\')">' +
+      '<span class="arrow">&#9654;</span> ' + user + '</td>' + cells +
+      '<td class="total">' + uTotal.toFixed(1) + '</td></tr>\\n';
+
+    // Project rows
+    Object.keys(projs).sort().forEach(proj => {{
+      const pid = 'p' + (rid++);
+      const tasks = projs[proj];
+      const pM = {{}};
+      vm.forEach(m => pM[m] = 0);
+      let pTotal = 0;
+      Object.values(tasks).forEach(t => {{
+        vm.forEach(m => {{ const h = t.months[m] || 0; pM[m] += h; pTotal += h; }});
+      }});
+      if (pTotal === 0) return;
+
+      let pCells = '';
+      vm.forEach(m => pCells += '<td>' + fmt(pM[m]) + '</td>');
+      html += '<tr class="row-l1" data-id="' + pid + '" data-parent="' + uid + '" style="display:none">' +
+        '<td onclick="toggle(\\'' + pid + '\\')">' +
+        '<span class="arrow">&#9654;</span> ' + proj + '</td>' + pCells +
+        '<td class="total">' + pTotal.toFixed(1) + '</td></tr>\\n';
+
+      // Task rows
+      Object.keys(tasks).sort().forEach(issKey => {{
+        const t = tasks[issKey];
+        let tCells = '';
+        let tT = 0;
+        vm.forEach(m => {{ const h = t.months[m] || 0; tT += h; tCells += '<td>' + fmt(h) + '</td>'; }});
+        if (tT === 0) return;
+        html += '<tr class="row-l2" data-parent="' + pid + '" style="display:none">' +
+          '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
+          t.summary.substring(0, 50) + '</td>' + tCells +
+          '<td>' + tT.toFixed(1) + '</td></tr>\\n';
       }});
     }});
   }});
 
-  // Totals row
   let tCells = '';
-  MONTHS.forEach(m => tCells += `<td class="total">${{monthTotals[m].toFixed(1)}}</td>`);
-  html += `<tr class="row-totals"><td>TOTAL</td>${{tCells}}<td class="total grand">${{grandTotal.toFixed(1)}}</td></tr>`;
-
-  tbody.innerHTML = html;
+  vm.forEach(m => tCells += '<td class="total">' + mTotals[m].toFixed(1) + '</td>');
+  html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
+    '<td class="total grand">' + gt.toFixed(1) + '</td></tr>';
+  document.getElementById('pBody').innerHTML = html;
 }}
 
-function toggleUser(ui) {{
-  const row = document.querySelector(`.row-user[data-user="${{ui}}"]`);
-  row.classList.toggle('open');
-  const show = row.classList.contains('open');
-  document.querySelectorAll(`.row-month[data-user="${{ui}}"]`).forEach(r => {{
-    r.style.display = show ? '' : 'none';
-    if (!show) {{
-      r.classList.remove('open');
-      // also hide tasks
-      const mid = r.dataset.month;
-      document.querySelectorAll(`.row-task[data-month="${{mid}}"]`).forEach(t => t.style.display = 'none');
-    }}
-  }});
-}}
+function buildNeuro() {{
+  const vm = getVisibleMonths();
+  buildHeaders('nHead');
 
-function toggleMonth(ui, mi) {{
-  event.stopPropagation();
-  const mid = `${{ui}}-${{mi}}`;
-  const row = document.querySelector(`.row-month[data-month="${{mid}}"]`);
-  row.classList.toggle('open');
-  const show = row.classList.contains('open');
-  document.querySelectorAll(`.row-task[data-month="${{mid}}"]`).forEach(r => {{
-    r.style.display = show ? '' : 'none';
-  }});
-}}
+  const parents = Object.keys(NEURO).sort();
+  let html = '';
+  let rid = 0;
+  const mTotals = {{}};
+  vm.forEach(m => mTotals[m] = 0);
+  let gt = 0;
 
-function expandAll() {{
-  document.querySelectorAll('.row-user').forEach(r => {{
-    r.classList.add('open');
-  }});
-  document.querySelectorAll('.row-month').forEach(r => {{
-    r.style.display = '';
-    r.classList.add('open');
-  }});
-  document.querySelectorAll('.row-task').forEach(r => r.style.display = '');
-}}
+  parents.forEach(parent => {{
+    const children = NEURO[parent];
+    const uid = 'n' + (rid++);
 
-function collapseAll() {{
-  document.querySelectorAll('.row-user').forEach(r => r.classList.remove('open'));
-  document.querySelectorAll('.row-month').forEach(r => {{
-    r.style.display = 'none';
-    r.classList.remove('open');
-  }});
-  document.querySelectorAll('.row-task').forEach(r => r.style.display = 'none');
-}}
-
-function applyFilters() {{
-  const groupVal = document.getElementById('filterGroup').value;
-  const userVal = document.getElementById('filterUser').value;
-  const allUsers = Object.keys(DATA).sort();
-
-  document.querySelectorAll('.row-user').forEach(r => {{
-    const ui = parseInt(r.dataset.user);
-    const userName = allUsers[ui];
-    let show = true;
-
-    // Filter by group
-    if (groupVal) {{
-      const groups = USER_GROUPS[userName] || [];
-      if (!groups.includes(groupVal)) show = false;
-    }}
-
-    // Filter by user
-    if (userVal && userName !== userVal) show = false;
-
-    r.style.display = show ? '' : 'none';
-    if (!show) {{
-      r.classList.remove('open');
-      document.querySelectorAll(`.row-month[data-user="${{ui}}"]`).forEach(m => {{
-        m.style.display = 'none';
-        m.classList.remove('open');
+    const uM = {{}};
+    vm.forEach(m => uM[m] = 0);
+    let uTotal = 0;
+    Object.values(children).forEach(tasks => {{
+      Object.values(tasks).forEach(t => {{
+        vm.forEach(m => {{ const h = t.months[m] || 0; uM[m] += h; uTotal += h; }});
       }});
-      document.querySelectorAll('.row-task').forEach(t => {{
-        if (t.dataset.month.startsWith(ui + '-')) t.style.display = 'none';
+    }});
+    if (uTotal === 0) return;
+
+    let cells = '';
+    vm.forEach(m => {{ mTotals[m] += uM[m]; cells += '<td>' + fmt(uM[m]) + '</td>'; }});
+    gt += uTotal;
+    html += '<tr class="row-l0" data-id="' + uid + '">' +
+      '<td onclick="toggle(\\'' + uid + '\\')">' +
+      '<span class="arrow">&#9654;</span> ' + parent + '</td>' + cells +
+      '<td class="total">' + uTotal.toFixed(1) + '</td></tr>\\n';
+
+    // Child rows
+    Object.keys(children).sort().forEach(child => {{
+      const cid = 'n' + (rid++);
+      const tasks = children[child];
+      const cM = {{}};
+      vm.forEach(m => cM[m] = 0);
+      let cTotal = 0;
+      Object.values(tasks).forEach(t => {{
+        vm.forEach(m => {{ const h = t.months[m] || 0; cM[m] += h; cTotal += h; }});
       }});
-    }}
+      if (cTotal === 0) return;
+
+      let cCells = '';
+      vm.forEach(m => cCells += '<td>' + fmt(cM[m]) + '</td>');
+      html += '<tr class="row-l1" data-id="' + cid + '" data-parent="' + uid + '" style="display:none">' +
+        '<td onclick="toggle(\\'' + cid + '\\')">' +
+        '<span class="arrow">&#9654;</span> ' + child + '</td>' + cCells +
+        '<td class="total">' + cTotal.toFixed(1) + '</td></tr>\\n';
+
+      // Task rows
+      Object.keys(tasks).sort().forEach(issKey => {{
+        const t = tasks[issKey];
+        let tCells = '';
+        let tT = 0;
+        vm.forEach(m => {{ const h = t.months[m] || 0; tT += h; tCells += '<td>' + fmt(h) + '</td>'; }});
+        if (tT === 0) return;
+        html += '<tr class="row-l2" data-parent="' + cid + '" style="display:none">' +
+          '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
+          t.summary.substring(0, 50) + '</td>' + tCells +
+          '<td>' + tT.toFixed(1) + '</td></tr>\\n';
+      }});
+    }});
   }});
+
+  let tCells = '';
+  vm.forEach(m => tCells += '<td class="total">' + mTotals[m].toFixed(1) + '</td>');
+  html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
+    '<td class="total grand">' + gt.toFixed(1) + '</td></tr>';
+  document.getElementById('nBody').innerHTML = html;
 }}
 
-buildTable();
+function switchTab(tab) {{
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('.tab[data-tab="' + tab + '"]').classList.add('active');
+  document.getElementById('tabPersonal').classList.toggle('active', tab === 'personal');
+  document.getElementById('tabNeuro').classList.toggle('active', tab === 'neuro');
+  if (tab === 'personal') buildPersonal();
+  else buildNeuro();
+}}
+
+function expandAll(bodyId) {{
+  const el = document.getElementById(bodyId);
+  el.querySelectorAll('.row-l0, .row-l1').forEach(r => r.classList.add('open'));
+  el.querySelectorAll('tr[data-parent]').forEach(r => r.style.display = '');
+}}
+
+function collapseAll(bodyId) {{
+  const el = document.getElementById(bodyId);
+  el.querySelectorAll('.row-l0, .row-l1').forEach(r => r.classList.remove('open'));
+  el.querySelectorAll('tr[data-parent]').forEach(r => r.style.display = 'none');
+}}
+
+function onDateChange() {{
+  updateSummary();
+  const active = document.querySelector('.tab.active').dataset.tab;
+  if (active === 'personal') buildPersonal();
+  else buildNeuro();
+}}
+
+updateSummary();
+buildPersonal();
 </script>
 </body>
 </html>"""
