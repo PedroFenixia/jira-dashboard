@@ -187,6 +187,14 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
             }
         js_data[user] = user_months
 
+    # Build user → groups mapping (displayName → [group_names])
+    user_groups_map = {}
+    if groups_info:
+        for aid, info in groups_info.items():
+            name = info["displayName"]
+            if name in js_data:
+                user_groups_map[name] = info["groups"]
+
     # Compute totals for summary cards
     grand_total = 0
     for user in users:
@@ -194,36 +202,6 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
             grand_total += js_data[user][m]["total"]
 
     group_names = sorted(set(g for info in groups_info.values() for g in info["groups"])) if groups_info else []
-
-    # Aggregate hours by Cliente GLOBAL and Neuro360
-    client_hours = defaultdict(float)
-    neuro_hours = defaultdict(float)
-    neuro_child_hours = defaultdict(lambda: defaultdict(float))
-    for user in users:
-        for m in months:
-            tasks = raw[user].get(m, {})
-            for key, info in tasks.items():
-                h = info["hours"]
-                cg = info.get("cliente_global", "Sin cliente")
-                n3 = info.get("neuro360", "Sin Neuro360")
-                n3c = info.get("neuro360_child", "")
-                client_hours[cg] += h
-                neuro_hours[n3] += h
-                if n3c:
-                    neuro_child_hours[n3][n3c] += h
-
-    # Sort by hours descending
-    client_sorted = sorted(client_hours.items(), key=lambda x: -x[1])
-    neuro_sorted = sorted(neuro_hours.items(), key=lambda x: -x[1])
-    client_chart = {"labels": [c[0] for c in client_sorted[:20]], "hours": [round(c[1],1) for c in client_sorted[:20]]}
-    neuro_chart = {"labels": [n[0] for n in neuro_sorted[:15]], "hours": [round(n[1],1) for n in neuro_sorted[:15]]}
-    # Build neuro detail table rows
-    neuro_detail_rows = ""
-    for parent, children_dict in sorted(neuro_child_hours.items(), key=lambda x: -neuro_hours.get(x[0], 0)):
-        parent_total = round(neuro_hours.get(parent, 0), 1)
-        neuro_detail_rows += f'<tr class="neuro-parent"><td>{parent}</td><td>{parent_total}</td></tr>'
-        for child_name, child_h in sorted(children_dict.items(), key=lambda x: -x[1]):
-            neuro_detail_rows += f'<tr class="neuro-child"><td>&nbsp;&nbsp;&nbsp;{child_name}</td><td>{round(child_h, 1)}</td></tr>'
 
     month_headers = ""
     for m in months:
@@ -237,7 +215,6 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Informe de Horas &mdash; {date_from} a {date_to}</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
 <style>
   :root {{
     --bg: #f8fafc; --card: #fff; --text: #1e293b; --muted: #64748b;
@@ -266,16 +243,16 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   .controls {{
     display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center;
   }}
+  .controls select {{
+    padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 0.8rem; background: var(--card); color: var(--text);
+    cursor: pointer; min-width: 180px;
+  }}
   .controls button {{
     padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
     background: var(--card); cursor: pointer; font-size: 0.8rem; color: var(--text);
   }}
   .controls button:hover {{ background: #f1f5f9; }}
-  .controls button.active {{ background: var(--blue); color: white; border-color: var(--blue); }}
-  .search {{
-    padding: 6px 12px; border: 1px solid var(--border); border-radius: 6px;
-    font-size: 0.8rem; width: 200px;
-  }}
   .table-wrap {{
     overflow-x: auto; background: var(--card);
     border: 1px solid var(--border); border-radius: 10px;
@@ -317,40 +294,12 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   .row-totals td:first-child {{ text-align: left; position: sticky; left: 0; background: #f1f5f9; z-index: 1; }}
   .row-totals td.grand {{ color: var(--green); font-size: 0.9rem; }}
 
-  /* Charts section */
-  .charts-section {{
-    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
-    margin-bottom: 28px;
-  }}
-  .chart-card {{
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: 10px; padding: 20px;
-  }}
-  .chart-card.full-width {{ grid-column: 1 / -1; }}
-  .chart-card h2 {{ font-size: 1.15rem; margin-bottom: 12px; }}
-  .chart-card canvas {{ max-height: 400px; }}
-  .neuro-table {{
-    width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-top: 12px;
-  }}
-  .neuro-table th, .neuro-table td {{
-    padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border);
-  }}
-  .neuro-table th {{
-    background: #f1f5f9; color: var(--muted); font-size: 0.7rem; text-transform: uppercase;
-  }}
-  .neuro-parent td {{ font-weight: 600; background: #fafbfc; }}
-  .neuro-child td {{ color: var(--muted); font-size: 0.78rem; }}
-  .neuro-child td:last-child {{ text-align: right; }}
-  .neuro-parent td:last-child {{ text-align: right; color: #8b5cf6; font-weight: 700; }}
 
   .zero {{ color: #cbd5e1; }}
   .footer {{ text-align: center; color: var(--muted); font-size: 0.7rem; margin-top: 24px; }}
-  @media (max-width: 900px) {{
-    .charts-section {{ grid-template-columns: 1fr; }}
-  }}
   @media print {{
     body {{ padding: 0; font-size: 0.65rem; }}
-    .controls, .charts-section {{ display: none; }}
+    .controls {{ display: none; }}
     .row-month, .row-task {{ display: none !important; }}
   }}
 </style>
@@ -367,28 +316,18 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   <div class="stat"><div class="val">{grand_total / len(months) if months else 0:,.1f}</div><div class="lbl">Media mensual</div></div>
 </div>
 
-<div class="charts-section">
-  <div class="chart-card">
-    <h2>Horas por Cliente GLOBAL</h2>
-    <canvas id="chartCliente"></canvas>
-  </div>
-  <div class="chart-card">
-    <h2>Horas por Neuro360</h2>
-    <canvas id="chartNeuro"></canvas>
-  </div>
-  <div class="chart-card full-width">
-    <h2>Detalle Neuro360 (Padre / Hijo)</h2>
-    <table class="neuro-table">
-      <thead><tr><th>Neuro360</th><th style="text-align:right">Horas</th></tr></thead>
-      <tbody>{neuro_detail_rows}</tbody>
-    </table>
-  </div>
-</div>
 
 <div class="controls">
+  <select id="filterGroup" onchange="applyFilters()">
+    <option value="">Todos los grupos</option>
+    {"".join(f'<option value="{g}">{g}</option>' for g in group_names)}
+  </select>
+  <select id="filterUser" onchange="applyFilters()">
+    <option value="">Todos los usuarios</option>
+    {"".join(f'<option value="{u}">{u}</option>' for u in users)}
+  </select>
   <button onclick="expandAll()">Expandir todo</button>
   <button onclick="collapseAll()">Colapsar todo</button>
-  <input type="text" class="search" placeholder="Buscar usuario..." oninput="filterUsers(this.value)">
 </div>
 
 <div class="table-wrap">
@@ -406,9 +345,8 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 const DATA = {json.dumps(js_data, ensure_ascii=False)};
 const MONTHS = {json.dumps(months)};
 const JIRA = "{jira_url}";
+const USER_GROUPS = {json.dumps(user_groups_map, ensure_ascii=False)};
 
-const CLIENT_CHART = {json.dumps(client_chart, ensure_ascii=False)};
-const NEURO_CHART = {json.dumps(neuro_chart, ensure_ascii=False)};
 const MNAMES = {json.dumps(MONTH_NAMES)};
 
 function fmt(h) {{ return h === 0 ? '<span class="zero">-</span>' : h.toFixed(1); }}
@@ -519,15 +457,32 @@ function collapseAll() {{
   document.querySelectorAll('.row-task').forEach(r => r.style.display = 'none');
 }}
 
-function filterUsers(q) {{
-  q = q.toLowerCase();
+function applyFilters() {{
+  const groupVal = document.getElementById('filterGroup').value;
+  const userVal = document.getElementById('filterUser').value;
+  const allUsers = Object.keys(DATA).sort();
+
   document.querySelectorAll('.row-user').forEach(r => {{
-    const name = r.querySelector('td').textContent.toLowerCase();
-    const show = name.includes(q);
+    const ui = parseInt(r.dataset.user);
+    const userName = allUsers[ui];
+    let show = true;
+
+    // Filter by group
+    if (groupVal) {{
+      const groups = USER_GROUPS[userName] || [];
+      if (!groups.includes(groupVal)) show = false;
+    }}
+
+    // Filter by user
+    if (userVal && userName !== userVal) show = false;
+
     r.style.display = show ? '' : 'none';
-    const ui = r.dataset.user;
     if (!show) {{
-      document.querySelectorAll(`.row-month[data-user="${{ui}}"]`).forEach(m => m.style.display = 'none');
+      r.classList.remove('open');
+      document.querySelectorAll(`.row-month[data-user="${{ui}}"]`).forEach(m => {{
+        m.style.display = 'none';
+        m.classList.remove('open');
+      }});
       document.querySelectorAll('.row-task').forEach(t => {{
         if (t.dataset.month.startsWith(ui + '-')) t.style.display = 'none';
       }});
@@ -535,78 +490,7 @@ function filterUsers(q) {{
   }});
 }}
 
-function renderCharts() {{
-  const tealPalette = [
-    '#0d9488','#14b8a6','#2dd4bf','#5eead4','#99f6e4',
-    '#0f766e','#115e59','#134e4a','#0e7490','#06b6d4',
-    '#22d3ee','#67e8f9','#a5f3fc','#164e63','#155e75',
-    '#0c4a6e','#075985','#0369a1','#0284c7','#0ea5e9'
-  ];
-  const purplePalette = [
-    '#7c3aed','#8b5cf6','#a78bfa','#c4b5fd','#ddd6fe',
-    '#6d28d9','#5b21b6','#4c1d95','#6366f1','#818cf8',
-    '#a5b4fc','#c7d2fe','#e0e7ff','#4338ca','#3730a3'
-  ];
-
-  if (CLIENT_CHART.labels.length > 0) {{
-    new Chart(document.getElementById('chartCliente'), {{
-      type: 'bar',
-      data: {{
-        labels: CLIENT_CHART.labels,
-        datasets: [{{
-          label: 'Horas',
-          data: CLIENT_CHART.hours,
-          backgroundColor: tealPalette.slice(0, CLIENT_CHART.labels.length),
-          borderRadius: 4,
-        }}]
-      }},
-      options: {{
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {{
-          legend: {{ display: false }},
-          tooltip: {{ callbacks: {{ label: ctx => ctx.raw.toFixed(1) + ' h' }} }}
-        }},
-        scales: {{
-          x: {{ title: {{ display: true, text: 'Horas' }}, grid: {{ color: '#f1f5f9' }} }},
-          y: {{ ticks: {{ font: {{ size: 11 }} }}, grid: {{ display: false }} }}
-        }}
-      }}
-    }});
-  }}
-
-  if (NEURO_CHART.labels.length > 0) {{
-    new Chart(document.getElementById('chartNeuro'), {{
-      type: 'bar',
-      data: {{
-        labels: NEURO_CHART.labels,
-        datasets: [{{
-          label: 'Horas',
-          data: NEURO_CHART.hours,
-          backgroundColor: purplePalette.slice(0, NEURO_CHART.labels.length),
-          borderRadius: 4,
-        }}]
-      }},
-      options: {{
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {{
-          legend: {{ display: false }},
-          tooltip: {{ callbacks: {{ label: ctx => ctx.raw.toFixed(1) + ' h' }} }}
-        }},
-        scales: {{
-          x: {{ title: {{ display: true, text: 'Horas' }}, grid: {{ color: '#f1f5f9' }} }},
-          y: {{ ticks: {{ font: {{ size: 11 }} }}, grid: {{ display: false }} }}
-        }}
-      }}
-    }});
-  }}
-}}
-
 buildTable();
-renderCharts();
 </script>
 </body>
 </html>"""
@@ -619,10 +503,11 @@ renderCharts();
 
 def main():
     parser = argparse.ArgumentParser(description="Informe de horas JIRA por usuario y mes")
+    current_month = datetime.now().strftime("%Y-%m")
     parser.add_argument("--from", dest="date_from", default="2024-01",
                         help="Mes inicio YYYY-MM (default: 2024-01)")
-    parser.add_argument("--to", dest="date_to", default="2026-01",
-                        help="Mes fin YYYY-MM (default: 2026-01)")
+    parser.add_argument("--to", dest="date_to", default=current_month,
+                        help=f"Mes fin YYYY-MM (default: {current_month})")
     parser.add_argument("--format", choices=["html", "csv"], default="html",
                         help="Formato de salida (default: html)")
     parser.add_argument("--no-group-filter", action="store_true",
