@@ -411,14 +411,26 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
         if projects:
             personal_data[user] = projects
 
+    # Build issue -> cliente_global mapping for JS filter
+    issue_client_map = {}
+    client_values_set = set()
+    for user in users:
+        for m in months:
+            tasks = raw[user].get(m, {})
+            for key, info in tasks.items():
+                cg = info.get("cliente_global", "Sin cliente") or "Sin cliente"
+                issue_client_map[key] = cg
+                client_values_set.add(cg)
+    client_values = sorted(client_values_set)
+
     # Build neuro data: parent -> child -> issue_key -> {summary, months}
     neuro_data = {}
     for user in users:
         for m in months:
             tasks = raw[user].get(m, {})
             for key, info in tasks.items():
-                parent = info.get("neuro360", "Sin Neuro360")
-                child = info.get("neuro360_child", "") or "Sin subcategoría"
+                parent = (info.get("neuro360", "Sin Neuro360") or "Sin Neuro360").title()
+                child = (info.get("neuro360_child", "") or "Sin subcategoría").title()
                 if parent not in neuro_data:
                     neuro_data[parent] = {}
                 if child not in neuro_data[parent]:
@@ -450,20 +462,27 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
             if key not in issue_worklogs:
                 continue
             issue_info = issue_worklogs[key]
-            change_months = set(c["date"][:7] for c in changes_list)
-            # Only include months different from change months
-            filtered_months = {m: h for m, h in issue_info["months"].items()
-                               if m not in change_months}
-            if not filtered_months:
-                continue
-            # Use each change transition as a label
+            # For each change, include worklog months where the change
+            # happened on or after day 5 of M+1 (late change).
             for change in changes_list:
+                change_date = change["date"]  # "YYYY-MM-DD"
+                filtered_months = {}
+                for m, h in issue_info["months"].items():
+                    y_m, mo_m = int(m[:4]), int(m[5:7])
+                    if mo_m == 12:
+                        cutoff = f"{y_m + 1}-01-05"
+                    else:
+                        cutoff = f"{y_m}-{mo_m + 1:02d}-05"
+                    if change_date >= cutoff:
+                        filtered_months[m] = h
+                if not filtered_months:
+                    continue
                 label = f'{change["from"]} \u2192 {change["to"]}'
                 if label not in changes_data:
                     changes_data[label] = {}
                 changes_data[label][key] = {
                     "summary": issue_info["summary"],
-                    "change_date": change["date"],
+                    "change_date": change_date,
                     "months": filtered_months,
                 }
 
@@ -508,6 +527,22 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
     group_items_ch = "".join(
         f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="debounce(buildChanges)">{g}</label>'
         for g in group_names
+    )
+
+    def _esc(v):
+        return v.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+
+    client_items_p = "".join(
+        f'<label class="ms-item"><input type="checkbox" value="{_esc(c)}" onchange="debounce(buildPersonal)">{_esc(c)}</label>'
+        for c in client_values
+    )
+    client_items_n = "".join(
+        f'<label class="ms-item"><input type="checkbox" value="{_esc(c)}" onchange="debounce(buildNeuro)">{_esc(c)}</label>'
+        for c in client_values
+    )
+    client_items_ch = "".join(
+        f'<label class="ms-item"><input type="checkbox" value="{_esc(c)}" onchange="debounce(buildChanges)">{_esc(c)}</label>'
+        for c in client_values
     )
 
     html = f"""<!DOCTYPE html>
@@ -695,6 +730,14 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
         {group_items}
       </div>
     </div>
+    <div class="multi-select" id="clientSelect">
+      <button type="button" class="ms-btn" onclick="document.getElementById('clientSelect').classList.toggle('open')">
+        <span id="clientLabel">Todos los clientes</span><span class="ms-arrow">&#9660;</span>
+      </button>
+      <div class="ms-panel">
+        {client_items_p}
+      </div>
+    </div>
     <button onclick="expandAll('pBody')">Expandir todo</button>
     <button onclick="collapseAll('pBody')">Colapsar todo</button>
   </div>
@@ -708,6 +751,14 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 
 <div id="tabNeuro" class="tab-content">
   <div class="controls">
+    <div class="multi-select" id="clientSelectN">
+      <button type="button" class="ms-btn" onclick="document.getElementById('clientSelectN').classList.toggle('open')">
+        <span id="clientLabelN">Todos los clientes</span><span class="ms-arrow">&#9660;</span>
+      </button>
+      <div class="ms-panel">
+        {client_items_n}
+      </div>
+    </div>
     <button onclick="expandAll('nBody')">Expandir todo</button>
     <button onclick="collapseAll('nBody')">Colapsar todo</button>
   </div>
@@ -727,6 +778,14 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
       </button>
       <div class="ms-panel">
         {group_items_ch}
+      </div>
+    </div>
+    <div class="multi-select" id="clientSelectCh">
+      <button type="button" class="ms-btn" onclick="document.getElementById('clientSelectCh').classList.toggle('open')">
+        <span id="clientLabelCh">Todos los clientes</span><span class="ms-arrow">&#9660;</span>
+      </button>
+      <div class="ms-panel">
+        {client_items_ch}
       </div>
     </div>
     <button onclick="expandAll('chBody')">Expandir todo</button>
@@ -786,6 +845,7 @@ const LEAVES = {json.dumps(leaves_data or dict(), ensure_ascii=False)};
 const FSTATS = {json.dumps(factorial_stats or dict(), ensure_ascii=False)};
 const ALL_MONTHS = {json.dumps(months)};
 const USER_GROUPS = {json.dumps(user_groups_map, ensure_ascii=False)};
+const CLIENT_MAP = {json.dumps(issue_client_map, ensure_ascii=False)};
 const JIRA = "{jira_url}";
 const MNAMES = {json.dumps(MONTH_NAMES)};
 const collapsedYears = new Set();
@@ -866,8 +926,9 @@ function buildHeaders(theadId, bodyId) {{
     yr += '<th colspan="' + span + '" class="year-th" onclick="toggleYear(\\'' + y + '\\')">' + arrow + ' ' + y + '</th>';
   }});
   yr += '<th></th></tr>';
-  const toggle = bodyId ? ' style="cursor:pointer" onclick="toggleAllRows(\\'' + bodyId + '\\')"' : '';
-  let mr = '<tr><th' + toggle + '>Nombre</th>';
+  const toggle = bodyId ? ' style="cursor:pointer;user-select:none" onclick="toggleAllRows(\\'' + bodyId + '\\')" title="Expandir / Colapsar todo"' : '';
+  const tArrow = bodyId ? '<span class="arrow" style="font-size:0.65rem;margin-right:4px">&#9654;</span> ' : '';
+  let mr = '<tr><th' + toggle + '>' + tArrow + 'Nombre</th>';
   cols.forEach(c => {{
     if (c.type === 'year') {{
       mr += '<th>Total</th>';
@@ -939,6 +1000,27 @@ function updateGroupLabel(msId, lblId) {{
   else lbl.textContent = sel.length + ' grupos';
 }}
 
+function getSelectedClients(msId) {{
+  msId = msId || 'clientSelect';
+  const checks = document.querySelectorAll('#' + msId + ' input[type=checkbox]:checked');
+  return Array.from(checks).map(c => c.value);
+}}
+
+function updateClientLabel(msId, lblId) {{
+  msId = msId || 'clientSelect';
+  lblId = lblId || 'clientLabel';
+  const sel = getSelectedClients(msId);
+  const lbl = document.getElementById(lblId);
+  if (sel.length === 0) lbl.textContent = 'Todos los clientes';
+  else if (sel.length <= 2) lbl.textContent = sel.join(', ');
+  else lbl.textContent = sel.length + ' clientes';
+}}
+
+function issueClientOk(key, selClients) {{
+  if (selClients.length === 0) return true;
+  return selClients.includes(CLIENT_MAP[key] || 'Sin cliente');
+}}
+
 document.addEventListener('click', function(e) {{
   document.querySelectorAll('.multi-select').forEach(function(ms) {{
     if (!ms.contains(e.target)) ms.classList.remove('open');
@@ -947,9 +1029,11 @@ document.addEventListener('click', function(e) {{
 
 function buildPersonal() {{
   updateGroupLabel();
+  updateClientLabel();
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
   const selGroups = getSelectedGroups();
+  const selClients = getSelectedClients();
   buildHeaders('pHead', 'pBody');
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('p')) delete LAZY[k]; }});
 
@@ -972,7 +1056,8 @@ function buildPersonal() {{
     vm.forEach(m => uM[m] = 0);
     let uTotal = 0;
     Object.values(projs).forEach(tasks => {{
-      Object.values(tasks).forEach(t => {{
+      Object.entries(tasks).forEach(([key, t]) => {{
+        if (!issueClientOk(key, selClients)) return;
         vm.forEach(m => {{ const h = t.months[m] || 0; uM[m] += h; uTotal += h; }});
       }});
     }});
@@ -993,7 +1078,8 @@ function buildPersonal() {{
       const pM = {{}};
       vm.forEach(m => pM[m] = 0);
       let pTotal = 0;
-      Object.values(tasks).forEach(t => {{
+      Object.entries(tasks).forEach(([key, t]) => {{
+        if (!issueClientOk(key, selClients)) return;
         vm.forEach(m => {{ const h = t.months[m] || 0; pM[m] += h; pTotal += h; }});
       }});
       if (pTotal === 0) return;
@@ -1007,6 +1093,7 @@ function buildPersonal() {{
 
       let tch = '';
       Object.keys(tasks).sort().forEach(issKey => {{
+        if (!issueClientOk(issKey, selClients)) return;
         const t = tasks[issKey];
         const tM = {{}};
         vm.forEach(m => tM[m] = t.months[m] || 0);
@@ -1033,8 +1120,10 @@ function buildPersonal() {{
 }}
 
 function buildNeuro() {{
+  updateClientLabel('clientSelectN', 'clientLabelN');
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
+  const selClients = getSelectedClients('clientSelectN');
   buildHeaders('nHead', 'nBody');
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('n')) delete LAZY[k]; }});
 
@@ -1053,7 +1142,8 @@ function buildNeuro() {{
     vm.forEach(m => uM[m] = 0);
     let uTotal = 0;
     Object.values(children).forEach(tasks => {{
-      Object.values(tasks).forEach(t => {{
+      Object.entries(tasks).forEach(([key, t]) => {{
+        if (!issueClientOk(key, selClients)) return;
         vm.forEach(m => {{ const h = t.months[m] || 0; uM[m] += h; uTotal += h; }});
       }});
     }});
@@ -1074,7 +1164,8 @@ function buildNeuro() {{
       const cM = {{}};
       vm.forEach(m => cM[m] = 0);
       let cTotal = 0;
-      Object.values(tasks).forEach(t => {{
+      Object.entries(tasks).forEach(([key, t]) => {{
+        if (!issueClientOk(key, selClients)) return;
         vm.forEach(m => {{ const h = t.months[m] || 0; cM[m] += h; cTotal += h; }});
       }});
       if (cTotal === 0) return;
@@ -1088,6 +1179,7 @@ function buildNeuro() {{
 
       let tch = '';
       Object.keys(tasks).sort().forEach(issKey => {{
+        if (!issueClientOk(issKey, selClients)) return;
         const t = tasks[issKey];
         const tM = {{}};
         vm.forEach(m => tM[m] = t.months[m] || 0);
@@ -1115,9 +1207,11 @@ function buildNeuro() {{
 
 function buildChanges() {{
   updateGroupLabel('groupSelectCh', 'groupLabelCh');
+  updateClientLabel('clientSelectCh', 'clientLabelCh');
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
   const selGroups = getSelectedGroups('groupSelectCh');
+  const selClients = getSelectedClients('clientSelectCh');
   buildHeaders('chHead', 'chBody');
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('ch')) delete LAZY[k]; }});
 
@@ -1147,7 +1241,8 @@ function buildChanges() {{
     const lM = {{}};
     vm.forEach(m => lM[m] = 0);
     let lTotal = 0;
-    Object.values(tasks).forEach(t => {{
+    Object.entries(tasks).forEach(([key, t]) => {{
+      if (!issueClientOk(key, selClients)) return;
       vm.forEach(m => {{ const h = sumM(t.months[m]); lM[m] += h; lTotal += h; }});
     }});
     if (lTotal === 0) return;
@@ -1162,6 +1257,7 @@ function buildChanges() {{
 
     let ch = '';
     Object.keys(tasks).sort().forEach(issKey => {{
+      if (!issueClientOk(issKey, selClients)) return;
       const t = tasks[issKey];
       const tM = {{}};
       vm.forEach(m => tM[m] = sumM(t.months[m]));

@@ -43,6 +43,9 @@ jobs:
           FACTORIAL_API_KEY: ${{ secrets.FACTORIAL_API_KEY }}
         run: python report_hours.py --output _site/index.html
 
+      - name: Copy CNAME for custom domain
+        run: cp CNAME _site/CNAME
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
