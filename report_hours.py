@@ -441,8 +441,10 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
                     if key in client_changes:
                         if key not in issue_worklogs:
                             issue_worklogs[key] = {"summary": info["summary"], "months": {}}
-                        issue_worklogs[key]["months"][m] = round(
-                            issue_worklogs[key]["months"].get(m, 0) + info["hours"], 1
+                        if m not in issue_worklogs[key]["months"]:
+                            issue_worklogs[key]["months"][m] = {}
+                        issue_worklogs[key]["months"][m][user] = round(
+                            issue_worklogs[key]["months"][m].get(user, 0) + info["hours"], 1
                         )
         for key, changes_list in client_changes.items():
             if key not in issue_worklogs:
@@ -501,6 +503,10 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 
     group_items = "".join(
         f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="debounce(buildPersonal)">{g}</label>'
+        for g in group_names
+    )
+    group_items_ch = "".join(
+        f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="debounce(buildChanges)">{g}</label>'
         for g in group_names
     )
 
@@ -715,6 +721,14 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 
 <div id="tabChanges" class="tab-content">
   <div class="controls">
+    <div class="multi-select" id="groupSelectCh">
+      <button type="button" class="ms-btn" onclick="document.getElementById('groupSelectCh').classList.toggle('open')">
+        <span id="groupLabelCh">Todos los grupos</span><span class="ms-arrow">&#9660;</span>
+      </button>
+      <div class="ms-panel">
+        {group_items_ch}
+      </div>
+    </div>
     <button onclick="expandAll('chBody')">Expandir todo</button>
     <button onclick="collapseAll('chBody')">Colapsar todo</button>
   </div>
@@ -909,22 +923,26 @@ function toggle(id) {{
   }});
 }}
 
-function getSelectedGroups() {{
-  const checks = document.querySelectorAll('#groupSelect input[type=checkbox]:checked');
+function getSelectedGroups(msId) {{
+  msId = msId || 'groupSelect';
+  const checks = document.querySelectorAll('#' + msId + ' input[type=checkbox]:checked');
   return Array.from(checks).map(c => c.value);
 }}
 
-function updateGroupLabel() {{
-  const sel = getSelectedGroups();
-  const lbl = document.getElementById('groupLabel');
+function updateGroupLabel(msId, lblId) {{
+  msId = msId || 'groupSelect';
+  lblId = lblId || 'groupLabel';
+  const sel = getSelectedGroups(msId);
+  const lbl = document.getElementById(lblId);
   if (sel.length === 0) lbl.textContent = 'Todos los grupos';
   else if (sel.length <= 2) lbl.textContent = sel.join(', ');
   else lbl.textContent = sel.length + ' grupos';
 }}
 
 document.addEventListener('click', function(e) {{
-  const ms = document.getElementById('groupSelect');
-  if (ms && !ms.contains(e.target)) ms.classList.remove('open');
+  document.querySelectorAll('.multi-select').forEach(function(ms) {{
+    if (!ms.contains(e.target)) ms.classList.remove('open');
+  }});
 }});
 
 function buildPersonal() {{
@@ -1096,10 +1114,24 @@ function buildNeuro() {{
 }}
 
 function buildChanges() {{
+  updateGroupLabel('groupSelectCh', 'groupLabelCh');
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
+  const selGroups = getSelectedGroups('groupSelectCh');
   buildHeaders('chHead', 'chBody');
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('ch')) delete LAZY[k]; }});
+
+  function isUserOk(u) {{
+    if (selGroups.length === 0) return true;
+    const ug = USER_GROUPS[u] || [];
+    return selGroups.some(g => ug.includes(g));
+  }}
+  function sumM(mEntry) {{
+    if (!mEntry) return 0;
+    let s = 0;
+    Object.keys(mEntry).forEach(u => {{ if (isUserOk(u)) s += mEntry[u]; }});
+    return s;
+  }}
 
   const labels = Object.keys(CHANGES).sort(sortES);
   let html = '';
@@ -1116,7 +1148,7 @@ function buildChanges() {{
     vm.forEach(m => lM[m] = 0);
     let lTotal = 0;
     Object.values(tasks).forEach(t => {{
-      vm.forEach(m => {{ const h = t.months[m] || 0; lM[m] += h; lTotal += h; }});
+      vm.forEach(m => {{ const h = sumM(t.months[m]); lM[m] += h; lTotal += h; }});
     }});
     if (lTotal === 0) return;
 
@@ -1132,7 +1164,7 @@ function buildChanges() {{
     Object.keys(tasks).sort().forEach(issKey => {{
       const t = tasks[issKey];
       const tM = {{}};
-      vm.forEach(m => tM[m] = t.months[m] || 0);
+      vm.forEach(m => tM[m] = sumM(t.months[m]));
       let tT = 0;
       vm.forEach(m => tT += tM[m]);
       if (tT === 0) return;
