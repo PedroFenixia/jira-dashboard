@@ -132,6 +132,40 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
     return raw
 
 
+def fetch_client_changes(client, issue_keys):
+    """Fetch changelogs and find Cliente GLOBAL (customfield_10111) changes.
+
+    Returns: {issue_key: [{date, from_val, to_val}, ...]}
+    """
+    changes = {}
+    total = len(issue_keys)
+    print(f"Buscando cambios de Cliente GLOBAL en {total} issues...")
+    for idx, key in enumerate(issue_keys):
+        try:
+            histories = client.get_issue_changelog(key)
+        except Exception:
+            continue
+        issue_changes = []
+        for history in histories:
+            created = history.get("created", "")
+            for item in history.get("items", []):
+                if item.get("fieldId") == "customfield_10111" or item.get("field") == "Cliente GLOBAL":
+                    from_val = item.get("fromString", "Sin cliente") or "Sin cliente"
+                    to_val = item.get("toString", "Sin cliente") or "Sin cliente"
+                    issue_changes.append({
+                        "date": created[:10],
+                        "from": from_val,
+                        "to": to_val,
+                    })
+        if issue_changes:
+            changes[key] = issue_changes
+        if (idx + 1) % 50 == 0:
+            print(f"  {idx + 1}/{total} issues revisadas...")
+
+    print(f"  {len(changes)} issues con cambios de Cliente GLOBAL")
+    return changes
+
+
 def build_months(date_from, date_to):
     months = []
     y, m = int(date_from[:4]), int(date_from[5:7])
@@ -167,8 +201,9 @@ def generate_csv(raw, months, output_path):
     return output_path
 
 
-def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output_path):
-    """Generate interactive HTML with two tabs: Personal and Neuro360."""
+def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output_path,
+                   client_changes=None):
+    """Generate interactive HTML with tabs: Personal, Neuro360, Cambios Cliente."""
     users = sorted(raw.keys())
 
     # Build personal data: user -> project -> issue_key -> {summary, months}
@@ -206,6 +241,42 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
                 neuro_data[parent][child][key]["months"][m] = round(
                     neuro_data[parent][child][key]["months"].get(m, 0) + info["hours"], 1
                 )
+
+    # Build changes data: change_label -> issue_key -> {summary, change_date, months}
+    changes_data = {}
+    if client_changes:
+        # Collect all worklogs per issue across all users
+        issue_worklogs = {}
+        for user in users:
+            for m in months:
+                tasks = raw[user].get(m, {})
+                for key, info in tasks.items():
+                    if key in client_changes:
+                        if key not in issue_worklogs:
+                            issue_worklogs[key] = {"summary": info["summary"], "months": {}}
+                        issue_worklogs[key]["months"][m] = round(
+                            issue_worklogs[key]["months"].get(m, 0) + info["hours"], 1
+                        )
+        for key, changes_list in client_changes.items():
+            if key not in issue_worklogs:
+                continue
+            issue_info = issue_worklogs[key]
+            change_months = set(c["date"][:7] for c in changes_list)
+            # Only include months different from change months
+            filtered_months = {m: h for m, h in issue_info["months"].items()
+                               if m not in change_months}
+            if not filtered_months:
+                continue
+            # Use each change transition as a label
+            for change in changes_list:
+                label = f'{change["from"]} \u2192 {change["to"]}'
+                if label not in changes_data:
+                    changes_data[label] = {}
+                changes_data[label][key] = {
+                    "summary": issue_info["summary"],
+                    "change_date": change["date"],
+                    "months": filtered_months,
+                }
 
     # Build user -> groups mapping
     user_groups_map = {}
@@ -381,6 +452,7 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 <div class="tabs">
   <button class="tab active" data-tab="personal" onclick="switchTab('personal')">Por Persona</button>
   <button class="tab" data-tab="neuro" onclick="switchTab('neuro')">Por Neuro360</button>
+  <button class="tab" data-tab="changes" onclick="switchTab('changes')">Cambios Cliente</button>
 </div>
 
 <div id="tabPersonal" class="tab-content active">
@@ -413,11 +485,28 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   </div>
 </div>
 
+<div id="tabChanges" class="tab-content">
+  <div class="controls">
+    <button onclick="expandAll('chBody')">Expandir todo</button>
+    <button onclick="collapseAll('chBody')">Colapsar todo</button>
+  </div>
+  <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px;">
+    Horas reportadas en meses distintos al mes en que se cambi&oacute; el campo Cliente GLOBAL.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead id="chHead"></thead>
+      <tbody id="chBody"></tbody>
+    </table>
+  </div>
+</div>
+
 <div class="footer">Generado por jira-dashboard/report_hours.py</div>
 
 <script>
 const PERSONAL = {json.dumps(personal_data, ensure_ascii=False)};
 const NEURO = {json.dumps(neuro_data, ensure_ascii=False)};
+const CHANGES = {json.dumps(changes_data, ensure_ascii=False)};
 const ALL_MONTHS = {json.dumps(months)};
 const USER_GROUPS = {json.dumps(user_groups_map, ensure_ascii=False)};
 const JIRA = "{jira_url}";
@@ -693,13 +782,70 @@ function buildNeuro() {{
   document.getElementById('nBody').innerHTML = html;
 }}
 
+function buildChanges() {{
+  const vm = getVisibleMonths();
+  const cols = getColumns(vm);
+  buildHeaders('chHead');
+
+  const labels = Object.keys(CHANGES).sort();
+  let html = '';
+  let rid = 0;
+  const mTotals = {{}};
+  cols.forEach((c, i) => mTotals[i] = 0);
+  let gt = 0;
+
+  labels.forEach(label => {{
+    const tasks = CHANGES[label];
+    const lid = 'ch' + (rid++);
+
+    const lM = {{}};
+    vm.forEach(m => lM[m] = 0);
+    let lTotal = 0;
+    Object.values(tasks).forEach(t => {{
+      vm.forEach(m => {{ const h = t.months[m] || 0; lM[m] += h; lTotal += h; }});
+    }});
+    if (lTotal === 0) return;
+
+    let cells = '';
+    cols.forEach((c, i) => {{ const v = colVal(lM, c); mTotals[i] += v; cells += '<td>' + fmt(v) + '</td>'; }});
+    gt += lTotal;
+    html += '<tr class="row-l0" data-id="' + lid + '">' +
+      '<td onclick="toggle(\\'' + lid + '\\')">' +
+      '<span class="arrow">&#9654;</span> ' + label + '</td>' + cells +
+      '<td class="total">' + lTotal.toFixed(1) + '</td></tr>\\n';
+
+    Object.keys(tasks).sort().forEach(issKey => {{
+      const t = tasks[issKey];
+      const tM = {{}};
+      vm.forEach(m => tM[m] = t.months[m] || 0);
+      let tT = 0;
+      vm.forEach(m => tT += tM[m]);
+      if (tT === 0) return;
+      let tCells = '';
+      cols.forEach(c => tCells += '<td>' + fmt(colVal(tM, c)) + '</td>');
+      html += '<tr class="row-l1" data-parent="' + lid + '" style="display:none">' +
+        '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
+        t.summary.substring(0, 50) + ' <small style="color:#94a3b8">(' + t.change_date + ')</small></td>' + tCells +
+        '<td class="total">' + tT.toFixed(1) + '</td></tr>\\n';
+    }});
+  }});
+
+  let tCells = '';
+  cols.forEach((c, i) => tCells += '<td class="total">' + mTotals[i].toFixed(1) + '</td>');
+  html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
+    '<td class="total grand">' + gt.toFixed(1) + '</td></tr>';
+  document.getElementById('chBody').innerHTML = html;
+}}
+
 function switchTab(tab) {{
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelector('.tab[data-tab="' + tab + '"]').classList.add('active');
   document.getElementById('tabPersonal').classList.toggle('active', tab === 'personal');
   document.getElementById('tabNeuro').classList.toggle('active', tab === 'neuro');
+  document.getElementById('tabChanges').classList.toggle('active', tab === 'changes');
   if (tab === 'personal') buildPersonal();
-  else buildNeuro();
+  else if (tab === 'neuro') buildNeuro();
+  else buildChanges();
 }}
 
 function expandAll(bodyId) {{
@@ -718,7 +864,8 @@ function onDateChange() {{
   updateSummary();
   const active = document.querySelector('.tab.active').dataset.tab;
   if (active === 'personal') buildPersonal();
-  else buildNeuro();
+  else if (active === 'neuro') buildNeuro();
+  else buildChanges();
 }}
 
 updateSummary();
@@ -767,13 +914,20 @@ def main():
     if not raw:
         print("Aviso: No se encontraron worklogs en el rango de fechas. Generando informe vacío.")
 
+    # Collect unique issue keys and fetch client field changes
+    issue_keys = set()
+    for user_data in raw.values():
+        for month_data in user_data.values():
+            issue_keys.update(month_data.keys())
+    client_changes = fetch_client_changes(client, sorted(issue_keys)) if issue_keys else {}
+
     if args.format == "csv":
         out = args.output or f"output/horas_{args.date_from}_{args.date_to}.csv"
         path = generate_csv(raw, months, out)
     else:
         out = args.output or f"output/horas_{args.date_from}_{args.date_to}.html"
         path = generate_html(raw, months, groups_info, args.date_from, args.date_to,
-                             config.jira_url, out)
+                             config.jira_url, out, client_changes=client_changes)
 
     abs_path = os.path.abspath(path)
     print(f"\nInforme generado: {abs_path}")
