@@ -16,6 +16,7 @@ import io
 import json
 import os
 import re
+import unicodedata
 from collections import defaultdict
 from datetime import datetime
 
@@ -391,6 +392,13 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
                    client_changes=None, comparison_data=None, leaves_data=None,
                    factorial_stats=None):
     """Generate interactive HTML with tabs: Personal, Neuro360, Cambios Cliente, + Factorial."""
+
+    def _norm(val, default=""):
+        """Normalize a string for grouping: NFC unicode, strip, title-case, collapse spaces."""
+        v = (val or default).strip()
+        v = unicodedata.normalize("NFC", v)
+        return " ".join(v.title().split())
+
     users = sorted(raw.keys())
 
     # Build personal data: user -> project -> issue_key -> {summary, months}
@@ -429,8 +437,8 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
         for m in months:
             tasks = raw[user].get(m, {})
             for key, info in tasks.items():
-                parent = (info.get("neuro360", "Sin Neuro360") or "Sin Neuro360").title()
-                child = (info.get("neuro360_child", "") or "Sin subcategoría").title()
+                parent = _norm(info.get("neuro360"), "Sin Neuro360")
+                child = _norm(info.get("neuro360_child"), "Sin Subcategoría")
                 if parent not in neuro_data:
                     neuro_data[parent] = {}
                 if child not in neuro_data[parent]:
