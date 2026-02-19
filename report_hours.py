@@ -10,6 +10,7 @@ Usage:
   python report_hours.py --format csv
 """
 import argparse
+import calendar
 import csv
 import io
 import json
@@ -59,8 +60,10 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
 
     Returns: user -> month -> [{key, summary, hours}]
     """
+    to_y, to_m = int(date_to[:4]), int(date_to[5:7])
+    last_day = calendar.monthrange(to_y, to_m)[1]
     jql = (
-        f'worklogDate >= "{date_from}-01" AND worklogDate <= "{date_to}-31" '
+        f'worklogDate >= "{date_from}-01" AND worklogDate <= "{date_to}-{last_day:02d}" '
         f"ORDER BY updated ASC"
     )
     fields = ["summary", "project", "worklog", "customfield_10111", "customfield_10094"]
@@ -762,8 +765,7 @@ def main():
     raw = fetch_worklogs(client, args.date_from, args.date_to, allowed_ids)
 
     if not raw:
-        print("No se encontraron worklogs en el rango de fechas.")
-        return
+        print("Aviso: No se encontraron worklogs en el rango de fechas. Generando informe vacío.")
 
     if args.format == "csv":
         out = args.output or f"output/horas_{args.date_from}_{args.date_to}.csv"
