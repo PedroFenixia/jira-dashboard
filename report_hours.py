@@ -133,37 +133,77 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
     return raw
 
 
-def fetch_client_changes(client, date_from, date_to):
-    """Find issues where Cliente GLOBAL was changed via JQL, then fetch changelogs.
+def _search_jql_direct(client, jql, fields):
+    """Search using new /search/jql endpoint directly (no legacy fallback)."""
+    url = f"{client.config.api_url}/search/jql"
+    all_issues = []
+    next_token = None
+    while True:
+        body = {"jql": jql, "fields": fields, "maxResults": 100}
+        if next_token:
+            body["nextPageToken"] = next_token
+        resp = client.session.post(url, json=body)
+        if resp.status_code != 200:
+            return None, resp.status_code, resp.text[:200]
+        data = resp.json()
+        all_issues.extend(data.get("issues", []))
+        next_token = data.get("nextPageToken")
+        if not next_token:
+            break
+    return all_issues, 200, ""
 
-    Uses JQL 'changed' operator to filter server-side, avoiding per-issue API calls.
+
+def fetch_client_changes(client, date_from, date_to):
+    """Find issues where Cliente GLOBAL was changed, then fetch changelogs.
+
+    Tries JQL 'changed' operator first. If unsupported, falls back to searching
+    issues with customfield_10111 set and checking changelogs individually.
     Returns: {issue_key: [{date, from_val, to_val}, ...]}
     """
     to_y, to_m = int(date_to[:4]), int(date_to[5:7])
     last_day = calendar.monthrange(to_y, to_m)[1]
-
-    jql = (
-        f'"Cliente GLOBAL" changed '
+    wl_filter = (
         f'AND worklogDate >= "{date_from}-01" '
         f'AND worklogDate <= "{date_to}-{last_day:02d}" '
         f'ORDER BY updated ASC'
     )
-    print("Buscando issues con cambios de Cliente GLOBAL (JQL)...")
-    try:
-        issues = client._search_issues(jql, fields=["summary"])
-    except Exception:
-        # Fallback: try cf[10111] syntax
-        try:
-            jql_alt = jql.replace('"Cliente GLOBAL" changed', 'cf[10111] changed')
-            issues = client._search_issues(jql_alt, fields=["summary"])
-        except Exception:
-            print("  No se pudo buscar por cambios de campo. Saltando.")
+
+    print("Buscando issues con cambios de Cliente GLOBAL...")
+    issues = None
+
+    # Try JQL 'changed' operator (may not work on all JIRA instances)
+    for changed_jql in [
+        f'"Cliente GLOBAL" changed {wl_filter}',
+        f'cf[10111] changed {wl_filter}',
+    ]:
+        result, status, err = _search_jql_direct(client, changed_jql, ["summary"])
+        if result is not None:
+            issues = result
+            print(f"  JQL 'changed' OK: {len(issues)} issues")
+            break
+        else:
+            print(f"  JQL 'changed' no soportado (HTTP {status})")
+
+    # Fallback: search issues with the field set, then filter by changelog
+    if issues is None:
+        print("  Usando fallback: issues con Cliente GLOBAL asignado...")
+        fallback_jql = f'customfield_10111 is not EMPTY {wl_filter}'
+        result, status, err = _search_jql_direct(client, fallback_jql, ["summary"])
+        if result is not None:
+            issues = result
+            print(f"  {len(issues)} issues con Cliente GLOBAL asignado")
+        else:
+            print(f"  Fallback también falló (HTTP {status}): {err}")
             return {}
 
-    print(f"  {len(issues)} issues con cambios encontradas")
+    # Fetch changelogs and filter for customfield_10111 changes
+    MAX_CHANGELOGS = 500
+    to_check = issues[:MAX_CHANGELOGS]
+    if len(issues) > MAX_CHANGELOGS:
+        print(f"  Limitando a {MAX_CHANGELOGS} de {len(issues)} issues")
 
     changes = {}
-    for idx, issue in enumerate(issues):
+    for idx, issue in enumerate(to_check):
         key = issue["key"]
         try:
             histories = client.get_issue_changelog(key)
@@ -184,7 +224,7 @@ def fetch_client_changes(client, date_from, date_to):
         if issue_changes:
             changes[key] = issue_changes
         if (idx + 1) % 50 == 0:
-            print(f"  {idx + 1}/{len(issues)} changelogs revisados...")
+            print(f"  {idx + 1}/{len(to_check)} changelogs revisados...")
 
     print(f"  {len(changes)} issues con cambios de Cliente GLOBAL confirmados")
     return changes
@@ -1237,34 +1277,37 @@ def main():
     leaves_data = None
     factorial_stats = None
     if config.factorial_enabled:
-        from factorial_client import FactorialClient
-        print("\n── Factorial HR ──────────────────────────")
-        fact_client = FactorialClient(config)
+        try:
+            from factorial_client import FactorialClient
+            print("\n── Factorial HR ──────────────────────────")
+            fact_client = FactorialClient(config)
 
-        print("Obteniendo empleados Factorial...")
-        fact_employees = fact_client.get_employees_map()
+            print("Obteniendo empleados Factorial...")
+            fact_employees = fact_client.get_employees_map()
 
-        jira_emails = fetch_jira_user_emails(client, set(groups_info.keys()))
+            jira_emails = fetch_jira_user_emails(client, set(groups_info.keys()))
 
-        matched, unmatched_j, unmatched_f = build_employee_match(
-            jira_emails, fact_employees, groups_info
-        )
-        factorial_stats = {
-            "matched": len(matched),
-            "unmatched_jira": len(unmatched_j),
-            "unmatched_factorial": len(unmatched_f),
-        }
+            matched, unmatched_j, unmatched_f = build_employee_match(
+                jira_emails, fact_employees, groups_info
+            )
+            factorial_stats = {
+                "matched": len(matched),
+                "unmatched_jira": len(unmatched_j),
+                "unmatched_factorial": len(unmatched_f),
+            }
 
-        print("Obteniendo fichajes Factorial...")
-        attendance = fact_client.get_attendance_range(args.date_from, args.date_to)
+            print("Obteniendo fichajes Factorial...")
+            attendance = fact_client.get_attendance_range(args.date_from, args.date_to)
 
-        print("Obteniendo ausencias Factorial...")
-        leaves_raw = fact_client.get_leaves_in_range(args.date_from, args.date_to)
+            print("Obteniendo ausencias Factorial...")
+            leaves_raw = fact_client.get_leaves_in_range(args.date_from, args.date_to)
 
-        comparison_data = build_comparison_data(raw, matched, attendance, months)
-        leaves_data = build_leaves_data(matched, leaves_raw)
-        print(f"  {len(comparison_data)} personas en comparación, "
-              f"{len(leaves_data)} con ausencias")
+            comparison_data = build_comparison_data(raw, matched, attendance, months)
+            leaves_data = build_leaves_data(matched, leaves_raw)
+            print(f"  {len(comparison_data)} personas en comparación, "
+                  f"{len(leaves_data)} con ausencias")
+        except Exception as e:
+            print(f"\nError en Factorial (continuando sin datos Factorial): {e}")
 
     if args.format == "csv":
         out = args.output or f"output/horas_{args.date_from}_{args.date_to}.csv"
