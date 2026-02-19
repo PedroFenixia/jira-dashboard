@@ -1508,7 +1508,7 @@ def main():
         issue_keys_with_client=keys_with_client
     )
 
-    # Factorial integration (optional)
+    # Factorial integration (optional, supports multiple companies)
     comparison_data = None
     leaves_data = None
     factorial_stats = None
@@ -1516,15 +1516,39 @@ def main():
         try:
             from factorial_client import FactorialClient
             print("\n── Factorial HR ──────────────────────────")
-            fact_client = FactorialClient(config)
 
-            print("Obteniendo empleados Factorial...")
-            fact_employees = fact_client.get_employees_map()
+            # Collect employees, attendance and leaves from all Factorial companies
+            all_fact_employees = {}
+            all_attendance = defaultdict(lambda: defaultdict(float))
+            all_leaves_raw = defaultdict(list)
+
+            for key_idx, api_key in enumerate(config.factorial_api_keys, 1):
+                print(f"\n  Empresa Factorial {key_idx}/{len(config.factorial_api_keys)}:")
+                fc_config = type(config).__new__(type(config))
+                fc_config.factorial_api_key = api_key
+                fact_client = FactorialClient(fc_config)
+
+                print(f"  Obteniendo empleados...")
+                emp_map = fact_client.get_employees_map()
+                all_fact_employees.update(emp_map)
+
+                print(f"  Obteniendo fichajes...")
+                att = fact_client.get_attendance_range(args.date_from, args.date_to)
+                for emp_id, months_data in att.items():
+                    for m, hours in months_data.items():
+                        all_attendance[emp_id][m] += hours
+
+                print(f"  Obteniendo ausencias...")
+                lvs = fact_client.get_leaves_in_range(args.date_from, args.date_to)
+                for emp_id, leaves_list in lvs.items():
+                    all_leaves_raw[emp_id].extend(leaves_list)
+
+            print(f"\n  Total: {len(all_fact_employees)} empleados Factorial combinados")
 
             jira_emails = fetch_jira_user_emails(client, set(groups_info.keys()))
 
             matched, unmatched_j, unmatched_f = build_employee_match(
-                jira_emails, fact_employees, groups_info
+                jira_emails, all_fact_employees, groups_info
             )
             factorial_stats = {
                 "matched": len(matched),
@@ -1532,18 +1556,14 @@ def main():
                 "unmatched_factorial": len(unmatched_f),
             }
 
-            print("Obteniendo fichajes Factorial...")
-            attendance = fact_client.get_attendance_range(args.date_from, args.date_to)
-
-            print("Obteniendo ausencias Factorial...")
-            leaves_raw = fact_client.get_leaves_in_range(args.date_from, args.date_to)
-
-            comparison_data = build_comparison_data(raw, matched, attendance, months)
-            leaves_data = build_leaves_data(matched, leaves_raw)
+            comparison_data = build_comparison_data(raw, matched, all_attendance, months)
+            leaves_data = build_leaves_data(matched, all_leaves_raw)
             print(f"  {len(comparison_data)} personas en comparación, "
                   f"{len(leaves_data)} con ausencias")
         except Exception as e:
+            import traceback
             print(f"\nError en Factorial (continuando sin datos Factorial): {e}")
+            traceback.print_exc()
 
     if args.format == "csv":
         out = args.output or f"output/horas_{args.date_from}_{args.date_to}.csv"
