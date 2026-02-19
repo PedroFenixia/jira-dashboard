@@ -190,6 +190,111 @@ def fetch_client_changes(client, date_from, date_to):
     return changes
 
 
+# ── Factorial integration helpers ────────────────────────────────
+
+
+def fetch_jira_user_emails(client, account_ids):
+    """Fetch email for each JIRA account ID."""
+    emails = {}
+    total = len(account_ids)
+    print(f"Obteniendo emails de {total} usuarios JIRA...")
+    for idx, aid in enumerate(account_ids):
+        try:
+            url = f"{client.config.api_url}/user"
+            resp = client._request("GET", url, params={"accountId": aid})
+            data = resp.json()
+            email = (data.get("emailAddress") or "").strip().lower()
+            if email:
+                emails[aid] = email
+        except Exception:
+            pass
+        if (idx + 1) % 50 == 0:
+            print(f"  {idx + 1}/{total} emails obtenidos...")
+    print(f"  {len(emails)} emails encontrados de {total} usuarios")
+    return emails
+
+
+def build_employee_match(jira_emails, fact_employees, groups_info):
+    """Match JIRA users to Factorial employees by email."""
+    matched = {}
+    unmatched_jira = []
+    matched_fact_emails = set()
+    for aid, email in jira_emails.items():
+        display_name = groups_info.get(aid, {}).get("displayName", aid)
+        if email in fact_employees:
+            fact = fact_employees[email]
+            matched[display_name] = {
+                "factorial_id": fact["id"],
+                "factorial_name": fact["full_name"],
+            }
+            matched_fact_emails.add(email)
+        else:
+            unmatched_jira.append(display_name)
+    unmatched_factorial = [
+        info["full_name"]
+        for email, info in fact_employees.items()
+        if email not in matched_fact_emails
+    ]
+    print(f"  Match: {len(matched)}, Sin match JIRA: {len(unmatched_jira)}, "
+          f"Sin match Factorial: {len(unmatched_factorial)}")
+    return matched, unmatched_jira, unmatched_factorial
+
+
+def build_comparison_data(raw, matched, attendance, months):
+    """Build JIRA vs Factorial hours comparison per person per month."""
+    comparison = {}
+    for display_name, match_info in sorted(matched.items()):
+        fact_id = match_info["factorial_id"]
+        fact_attendance = attendance.get(fact_id, {})
+        person = {"months": {}, "totals": {"jira": 0, "factorial": 0}}
+        for m in months:
+            jira_h = 0
+            if display_name in raw:
+                for info in raw[display_name].get(m, {}).values():
+                    jira_h += info["hours"]
+            jira_h = round(jira_h, 1)
+            fact_h = round(fact_attendance.get(m, 0), 1)
+            diff = round(jira_h - fact_h, 1)
+            person["months"][m] = {"jira": jira_h, "factorial": fact_h, "diff": diff}
+            person["totals"]["jira"] += jira_h
+            person["totals"]["factorial"] += fact_h
+        person["totals"]["jira"] = round(person["totals"]["jira"], 1)
+        person["totals"]["factorial"] = round(person["totals"]["factorial"], 1)
+        if person["totals"]["jira"] > 0 or person["totals"]["factorial"] > 0:
+            comparison[display_name] = person
+    return comparison
+
+
+def build_leaves_data(matched, leaves):
+    """Build leaves/absences data per person."""
+    result = {}
+    for display_name, match_info in sorted(matched.items()):
+        fact_id = match_info["factorial_id"]
+        emp_leaves = leaves.get(fact_id, [])
+        if not emp_leaves:
+            continue
+        entries = []
+        for lv in emp_leaves:
+            start = lv["start_date"]
+            end = lv["end_date"]
+            try:
+                from datetime import date
+                d1 = date.fromisoformat(start)
+                d2 = date.fromisoformat(end)
+                days = max(1, (d2 - d1).days + 1)
+            except (ValueError, TypeError):
+                days = 1
+            entries.append({
+                "start_date": start,
+                "end_date": end,
+                "leave_type": lv["leave_type"],
+                "status": lv["status"],
+                "days": days,
+            })
+        result[display_name] = entries
+    return result
+
+
 def build_months(date_from, date_to):
     months = []
     y, m = int(date_from[:4]), int(date_from[5:7])
@@ -226,8 +331,9 @@ def generate_csv(raw, months, output_path):
 
 
 def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output_path,
-                   client_changes=None):
-    """Generate interactive HTML with tabs: Personal, Neuro360, Cambios Cliente."""
+                   client_changes=None, comparison_data=None, leaves_data=None,
+                   factorial_stats=None):
+    """Generate interactive HTML with tabs: Personal, Neuro360, Cambios Cliente, + Factorial."""
     users = sorted(raw.keys())
 
     # Build personal data: user -> project -> issue_key -> {summary, months}
@@ -504,6 +610,8 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   <button class="tab active" data-tab="personal" onclick="switchTab('personal')">Por Persona</button>
   <button class="tab" data-tab="neuro" onclick="switchTab('neuro')">Por Neuro360</button>
   <button class="tab" data-tab="changes" onclick="switchTab('changes')">Cambios Cliente</button>
+  <button class="tab" data-tab="compare" onclick="switchTab('compare')" style="display:{'inline-block' if comparison_data else 'none'}">JIRA vs Factorial</button>
+  <button class="tab" data-tab="leaves" onclick="switchTab('leaves')" style="display:{'inline-block' if leaves_data else 'none'}">Ausencias</button>
 </div>
 
 <div id="tabPersonal" class="tab-content active">
@@ -556,12 +664,47 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   </div>
 </div>
 
+<div id="tabCompare" class="tab-content">
+  <div class="controls">
+    <button onclick="expandAll('cpBody')">Expandir todo</button>
+    <button onclick="collapseAll('cpBody')">Colapsar todo</button>
+  </div>
+  <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px;">
+    Comparaci&oacute;n de horas reportadas en JIRA vs fichajes en Factorial HR.
+    <span style="color:var(--green)">&FilledSmallSquare; &lt;10%</span>
+    <span style="color:var(--amber)">&FilledSmallSquare; 10-25%</span>
+    <span style="color:#ef4444">&FilledSmallSquare; &gt;25%</span>
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead id="cpHead"></thead>
+      <tbody id="cpBody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div id="tabLeaves" class="tab-content">
+  <div class="controls">
+    <button onclick="expandAll('lvBody')">Expandir todo</button>
+    <button onclick="collapseAll('lvBody')">Colapsar todo</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead id="lvHead"><tr><th style="text-align:left">Empleado</th><th>Tipo</th><th>Desde</th><th>Hasta</th><th>Estado</th><th>D&iacute;as</th></tr></thead>
+      <tbody id="lvBody"></tbody>
+    </table>
+  </div>
+</div>
+
 <div class="footer">Generado por jira-dashboard/report_hours.py</div>
 
 <script>
 const PERSONAL = {json.dumps(personal_data, ensure_ascii=False)};
 const NEURO = {json.dumps(neuro_data, ensure_ascii=False)};
 const CHANGES = {json.dumps(changes_data, ensure_ascii=False)};
+const COMPARISON = {json.dumps(comparison_data or {{}}, ensure_ascii=False)};
+const LEAVES = {json.dumps(leaves_data or {{}}, ensure_ascii=False)};
+const FSTATS = {json.dumps(factorial_stats or {{}}, ensure_ascii=False)};
 const ALL_MONTHS = {json.dumps(months)};
 const USER_GROUPS = {json.dumps(user_groups_map, ensure_ascii=False)};
 const JIRA = "{jira_url}";
@@ -911,15 +1054,111 @@ function buildChanges() {{
   document.getElementById('chBody').innerHTML = html;
 }}
 
+function buildComparison() {{
+  const vm = getVisibleMonths();
+  const cols = getColumns(vm);
+  // Build header
+  const yg = getYearGroups(vm);
+  const years = Object.keys(yg).sort();
+  let yr = '<tr class="year-row"><th></th>';
+  years.forEach(y => {{
+    const cl = collapsedYears.has(y);
+    const span = cl ? 1 : yg[y].length;
+    const arrow = cl ? '&#9654;' : '&#9660;';
+    yr += '<th colspan="' + (span * 2) + '" class="year-th" onclick="toggleYear(\\'' + y + '\\')">' + arrow + ' ' + y + '</th>';
+  }});
+  yr += '<th colspan="2"></th></tr>';
+  let mr = '<tr><th>Empleado</th>';
+  cols.forEach(c => {{
+    const lbl = c.type === 'year' ? 'Total' : MNAMES[c.month.slice(5)];
+    mr += '<th style="color:var(--blue)">J</th><th style="color:var(--purple)">F</th>';
+  }});
+  mr += '<th style="color:var(--blue)">JIRA</th><th style="color:var(--purple)">FACT</th></tr>';
+  document.getElementById('cpHead').innerHTML = yr + mr;
+
+  const users = Object.keys(COMPARISON).sort();
+  let html = '';
+  let tJira = 0, tFact = 0;
+
+  users.forEach(user => {{
+    const p = COMPARISON[user];
+    let uJ = 0, uF = 0;
+    let cells = '';
+    cols.forEach(c => {{
+      let j = 0, f = 0;
+      if (c.type === 'year') {{
+        c.months.forEach(m => {{
+          const d = p.months[m] || {{jira:0,factorial:0}};
+          j += d.jira; f += d.factorial;
+        }});
+      }} else {{
+        const d = p.months[c.month] || {{jira:0,factorial:0}};
+        j = d.jira; f = d.factorial;
+      }}
+      uJ += j; uF += f;
+      const pct = f > 0 ? Math.abs((j - f) / f * 100) : (j > 0 ? 100 : 0);
+      const bg = pct <= 10 ? '' : pct <= 25 ? 'background:#fef3c7;' : 'background:#fecaca;';
+      cells += '<td style="' + bg + '">' + fmt(j) + '</td><td style="' + bg + '">' + fmt(f) + '</td>';
+    }});
+    tJira += uJ; tFact += uF;
+    html += '<tr class="row-l0"><td style="text-align:left;position:sticky;left:0;background:var(--card);z-index:1">' +
+      user + '</td>' + cells +
+      '<td class="total">' + uJ.toFixed(1) + '</td><td class="total" style="color:var(--purple)">' + uF.toFixed(1) + '</td></tr>\\n';
+  }});
+
+  html += '<tr class="row-totals"><td>TOTAL</td>';
+  cols.forEach(c => html += '<td></td><td></td>');
+  html += '<td class="total grand">' + tJira.toFixed(1) + '</td><td class="total" style="color:var(--purple);font-size:0.9rem;font-weight:700">' + tFact.toFixed(1) + '</td></tr>';
+  document.getElementById('cpBody').innerHTML = html;
+}}
+
+function buildLeaves() {{
+  const users = Object.keys(LEAVES).sort();
+  let html = '';
+  let rid = 0;
+  let totalDays = 0;
+
+  users.forEach(user => {{
+    const entries = LEAVES[user];
+    const uid = 'lv' + (rid++);
+    let uDays = 0;
+    entries.forEach(e => uDays += e.days);
+    totalDays += uDays;
+
+    html += '<tr class="row-l0" data-id="' + uid + '">' +
+      '<td onclick="toggle(\\'' + uid + '\\')" style="text-align:left;position:sticky;left:0;background:var(--card);z-index:1">' +
+      '<span class="arrow">&#9654;</span> ' + user + '</td>' +
+      '<td></td><td></td><td></td><td></td><td class="total">' + uDays + '</td></tr>\\n';
+
+    entries.forEach(e => {{
+      html += '<tr class="row-l1" data-parent="' + uid + '" style="display:none">' +
+        '<td style="padding-left:32px;text-align:left;position:sticky;left:0;background:#fafbfc;z-index:1">&nbsp;</td>' +
+        '<td style="text-align:left">' + e.leave_type + '</td>' +
+        '<td>' + e.start_date + '</td>' +
+        '<td>' + e.end_date + '</td>' +
+        '<td>' + e.status + '</td>' +
+        '<td>' + e.days + '</td></tr>\\n';
+    }});
+  }});
+
+  html += '<tr class="row-totals"><td>TOTAL</td><td></td><td></td><td></td><td></td>' +
+    '<td class="total grand">' + totalDays + '</td></tr>';
+  document.getElementById('lvBody').innerHTML = html;
+}}
+
 function switchTab(tab) {{
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelector('.tab[data-tab="' + tab + '"]').classList.add('active');
   document.getElementById('tabPersonal').classList.toggle('active', tab === 'personal');
   document.getElementById('tabNeuro').classList.toggle('active', tab === 'neuro');
   document.getElementById('tabChanges').classList.toggle('active', tab === 'changes');
+  document.getElementById('tabCompare').classList.toggle('active', tab === 'compare');
+  document.getElementById('tabLeaves').classList.toggle('active', tab === 'leaves');
   if (tab === 'personal') buildPersonal();
   else if (tab === 'neuro') buildNeuro();
-  else buildChanges();
+  else if (tab === 'changes') buildChanges();
+  else if (tab === 'compare') buildComparison();
+  else if (tab === 'leaves') buildLeaves();
 }}
 
 function expandAll(bodyId) {{
@@ -939,7 +1178,9 @@ function onDateChange() {{
   const active = document.querySelector('.tab.active').dataset.tab;
   if (active === 'personal') buildPersonal();
   else if (active === 'neuro') buildNeuro();
-  else buildChanges();
+  else if (active === 'changes') buildChanges();
+  else if (active === 'compare') buildComparison();
+  else if (active === 'leaves') buildLeaves();
 }}
 
 updateSummary();
@@ -991,13 +1232,49 @@ def main():
     # Fetch client field changes (uses JQL server-side filter)
     client_changes = fetch_client_changes(client, args.date_from, args.date_to)
 
+    # Factorial integration (optional)
+    comparison_data = None
+    leaves_data = None
+    factorial_stats = None
+    if config.factorial_enabled:
+        from factorial_client import FactorialClient
+        print("\n── Factorial HR ──────────────────────────")
+        fact_client = FactorialClient(config)
+
+        print("Obteniendo empleados Factorial...")
+        fact_employees = fact_client.get_employees_map()
+
+        jira_emails = fetch_jira_user_emails(client, set(groups_info.keys()))
+
+        matched, unmatched_j, unmatched_f = build_employee_match(
+            jira_emails, fact_employees, groups_info
+        )
+        factorial_stats = {
+            "matched": len(matched),
+            "unmatched_jira": len(unmatched_j),
+            "unmatched_factorial": len(unmatched_f),
+        }
+
+        print("Obteniendo fichajes Factorial...")
+        attendance = fact_client.get_attendance_range(args.date_from, args.date_to)
+
+        print("Obteniendo ausencias Factorial...")
+        leaves_raw = fact_client.get_leaves_in_range(args.date_from, args.date_to)
+
+        comparison_data = build_comparison_data(raw, matched, attendance, months)
+        leaves_data = build_leaves_data(matched, leaves_raw)
+        print(f"  {len(comparison_data)} personas en comparación, "
+              f"{len(leaves_data)} con ausencias")
+
     if args.format == "csv":
         out = args.output or f"output/horas_{args.date_from}_{args.date_to}.csv"
         path = generate_csv(raw, months, out)
     else:
         out = args.output or f"output/horas_{args.date_from}_{args.date_to}.html"
         path = generate_html(raw, months, groups_info, args.date_from, args.date_to,
-                             config.jira_url, out, client_changes=client_changes)
+                             config.jira_url, out, client_changes=client_changes,
+                             comparison_data=comparison_data, leaves_data=leaves_data,
+                             factorial_stats=factorial_stats)
 
     abs_path = os.path.abspath(path)
     print(f"\nInforme generado: {abs_path}")

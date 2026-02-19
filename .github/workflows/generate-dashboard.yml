@@ -39,6 +39,7 @@ jobs:
           JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
           JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          FACTORIAL_API_KEY: ${{ secrets.FACTORIAL_API_KEY }}
         run: python report_hours.py --output _site/index.html
 
       - name: Upload Pages artifact

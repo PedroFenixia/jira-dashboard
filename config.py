@@ -14,6 +14,9 @@ class Config:
         self.story_points_field = os.getenv("STORY_POINTS_FIELD", "")
         self.sprint_count = int(os.getenv("SPRINT_COUNT") or "6")
         self.max_boards = int(os.getenv("MAX_BOARDS") or "20")
+        # Factorial HR (optional)
+        self.factorial_api_key = os.getenv("FACTORIAL_API_KEY", "")
+        self.factorial_enabled = bool(self.factorial_api_key)
         self._validate()
 
     def _validate(self):
