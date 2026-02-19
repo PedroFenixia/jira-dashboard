@@ -185,7 +185,14 @@ def fetch_client_changes(client, date_from, date_to, issue_keys_with_client=None
         else:
             print(f"  JQL 'changed' no soportado (HTTP {status})")
 
-    # Fallback: search issues with the field set
+    # Preferred fallback: use issue keys from worklogs that have cliente_global set
+    # This is much more targeted than JQL 'is not EMPTY' which returns ~60k issues
+    if issues is None and issue_keys_with_client:
+        keys = list(issue_keys_with_client)
+        print(f"  Usando {len(keys)} issue keys de worklogs con Cliente GLOBAL")
+        issues = [{"key": k} for k in keys]
+
+    # Last resort: JQL field query (only if no worklog keys available)
     if issues is None:
         for fallback_jql in [
             f'"Cliente GLOBAL" is not EMPTY {wl_filter}',
@@ -194,23 +201,17 @@ def fetch_client_changes(client, date_from, date_to, issue_keys_with_client=None
             result, status, err = _search_jql_direct(client, fallback_jql, ["summary"])
             if result is not None and len(result) > 0:
                 issues = result
-                print(f"  Fallback JQL OK: {len(issues)} issues con Cliente GLOBAL")
+                print(f"  Fallback JQL: {len(issues)} issues con Cliente GLOBAL")
                 break
             elif result is not None:
                 print(f"  Fallback JQL OK pero 0 resultados")
-
-    # Last resort: use issue keys from worklogs that have cliente_global set
-    if (issues is None or len(issues) == 0) and issue_keys_with_client:
-        keys = list(issue_keys_with_client)
-        print(f"  Usando {len(keys)} issue keys de worklogs como fallback")
-        issues = [{"key": k} for k in keys]
 
     if not issues:
         print("  No se encontraron issues para revisar")
         return {}
 
     # Fetch changelogs and filter for customfield_10111 changes
-    MAX_CHANGELOGS = 500
+    MAX_CHANGELOGS = 2000
     to_check = issues[:MAX_CHANGELOGS]
     if len(issues) > MAX_CHANGELOGS:
         print(f"  Limitando a {MAX_CHANGELOGS} de {len(issues)} issues")
