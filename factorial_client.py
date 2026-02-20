@@ -136,11 +136,20 @@ class FactorialClient:
             month_key = f"{y}-{m:02d}"
             print(f"  Factorial fichajes {month_key}...")
             records = self.get_attendance(y, m)
+            # Debug: show first record structure
+            if records and month_key == f"{y}-{m:02d}" and not hasattr(self, '_debug_shown'):
+                sample = records[0]
+                print(f"    [DEBUG] Ejemplo registro: {dict((k, sample.get(k)) for k in ('employee_id', 'date', 'clock_in', 'clock_out', 'minutes', 'observations') if k in sample)}")
+                print(f"    [DEBUG] Claves disponibles: {list(sample.keys())}")
+                self._debug_shown = True
+            skipped = 0
+            month_hours = 0
             for rec in records:
                 emp_id = rec.get("employee_id")
                 clock_in = rec.get("clock_in") or ""
                 clock_out = rec.get("clock_out") or ""
                 if not emp_id or not clock_in or not clock_out:
+                    skipped += 1
                     continue
                 try:
                     hours = 0
@@ -163,8 +172,10 @@ class FactorialClient:
                         monthly[emp_id][month_key] += hours
                         if day_str:
                             daily[emp_id][day_str] += hours
+                        month_hours += hours
                 except (ValueError, TypeError):
-                    pass
+                    skipped += 1
+            print(f"    {len(records)} registros, {skipped} saltados, {month_hours:.1f}h total")
             m += 1
             if m > 12:
                 m = 1
