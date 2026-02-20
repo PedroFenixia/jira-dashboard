@@ -122,6 +122,9 @@ class FactorialClient:
     def get_attendance_range(self, date_from, date_to):
         """Fetch attendance per month in range YYYY-MM to YYYY-MM.
 
+        The API returns ALL records regardless of year/month params,
+        so we fetch once and filter by date field.
+
         Returns: (monthly, daily)
           monthly: {employee_id -> {month_key -> total_hours}}
           daily:   {employee_id -> {date_str -> total_hours}}
@@ -129,57 +132,68 @@ class FactorialClient:
         monthly = defaultdict(lambda: defaultdict(float))
         daily = defaultdict(lambda: defaultdict(float))
 
+        # Build set of valid months in range
+        valid_months = set()
         y, m = int(date_from[:4]), int(date_from[5:7])
         end_y, end_m = int(date_to[:4]), int(date_to[5:7])
-
         while (y, m) <= (end_y, end_m):
-            month_key = f"{y}-{m:02d}"
-            print(f"  Factorial fichajes {month_key}...")
-            records = self.get_attendance(y, m)
-            # Debug: show first record structure
-            if records and month_key == f"{y}-{m:02d}" and not hasattr(self, '_debug_shown'):
-                sample = records[0]
-                print(f"    [DEBUG] Ejemplo registro: {dict((k, sample.get(k)) for k in ('employee_id', 'date', 'clock_in', 'clock_out', 'minutes', 'observations') if k in sample)}")
-                print(f"    [DEBUG] Claves disponibles: {list(sample.keys())}")
-                self._debug_shown = True
-            skipped = 0
-            month_hours = 0
-            for rec in records:
-                emp_id = rec.get("employee_id")
-                clock_in = rec.get("clock_in") or ""
-                clock_out = rec.get("clock_out") or ""
-                if not emp_id or not clock_in or not clock_out:
-                    skipped += 1
-                    continue
-                try:
-                    hours = 0
-                    day_str = rec.get("date") or ""
-                    minutes = rec.get("minutes")
-                    if minutes is not None and minutes > 0:
-                        hours = minutes / 60
-                    elif "T" in clock_in:
-                        from datetime import datetime as dt
-                        t_in = dt.fromisoformat(clock_in.replace("Z", "+00:00"))
-                        t_out = dt.fromisoformat(clock_out.replace("Z", "+00:00"))
-                        hours = (t_out - t_in).total_seconds() / 3600
-                        if not day_str:
-                            day_str = t_in.strftime("%Y-%m-%d")
-                    else:
-                        h_in, m_in = map(int, clock_in.split(":"))
-                        h_out, m_out = map(int, clock_out.split(":"))
-                        hours = (h_out * 60 + m_out - h_in * 60 - m_in) / 60
-                    if hours > 0:
-                        monthly[emp_id][month_key] += hours
-                        if day_str:
-                            daily[emp_id][day_str] += hours
-                        month_hours += hours
-                except (ValueError, TypeError):
-                    skipped += 1
-            print(f"    {len(records)} registros, {skipped} saltados, {month_hours:.1f}h total")
+            valid_months.add(f"{y}-{m:02d}")
             m += 1
             if m > 12:
                 m = 1
                 y += 1
+
+        # Fetch all records (API ignores year/month filter)
+        print(f"  Factorial fichajes ({len(valid_months)} meses: {date_from} a {date_to})...")
+        records = self.get_attendance(int(date_from[:4]), int(date_from[5:7]))
+        print(f"    {len(records)} registros totales recibidos")
+
+        skipped = 0
+        out_of_range = 0
+        total_hours = 0
+        for rec in records:
+            emp_id = rec.get("employee_id")
+            clock_in = rec.get("clock_in") or ""
+            clock_out = rec.get("clock_out") or ""
+            if not emp_id or not clock_in or not clock_out:
+                skipped += 1
+                continue
+            try:
+                day_str = rec.get("date") or ""
+                if not day_str:
+                    skipped += 1
+                    continue
+
+                # Filter by date range
+                month_key = day_str[:7]  # "YYYY-MM"
+                if month_key not in valid_months:
+                    out_of_range += 1
+                    continue
+
+                # Prefer 'minutes' field (most reliable)
+                hours = 0
+                minutes = rec.get("minutes")
+                if minutes is not None and minutes > 0:
+                    hours = minutes / 60
+                elif "T" in clock_in:
+                    from datetime import datetime as dt
+                    t_in = dt.fromisoformat(clock_in.replace("Z", "+00:00"))
+                    t_out = dt.fromisoformat(clock_out.replace("Z", "+00:00"))
+                    hours = (t_out - t_in).total_seconds() / 3600
+                else:
+                    h_in, m_in = map(int, clock_in.split(":"))
+                    h_out, m_out = map(int, clock_out.split(":"))
+                    hours = (h_out * 60 + m_out - h_in * 60 - m_in) / 60
+
+                if hours > 0:
+                    monthly[emp_id][month_key] += hours
+                    daily[emp_id][day_str] += hours
+                    total_hours += hours
+            except (ValueError, TypeError):
+                skipped += 1
+
+        print(f"    En rango: {total_hours:.1f}h, fuera de rango: {out_of_range}, saltados: {skipped}")
+        print(f"    {len(monthly)} empleados con fichajes en el rango")
 
         return monthly, daily
 

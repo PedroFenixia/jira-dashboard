@@ -1625,23 +1625,6 @@ def main():
                 "unmatched_factorial": len(unmatched_f),
             }
 
-            # Debug: show Factorial hours for matched users
-            print(f"\n  [DEBUG] Horas Factorial por persona matched (top 10):")
-            debug_fact = []
-            for name, minfo in matched.items():
-                fid = minfo["factorial_id"]
-                total_h = sum(all_attendance.get(fid, {}).values())
-                if total_h > 0:
-                    debug_fact.append((name, fid, round(total_h, 1)))
-            debug_fact.sort(key=lambda x: -x[2])
-            for name, fid, h in debug_fact[:10]:
-                print(f"    {name} (id={fid}): {h}h")
-            if not debug_fact:
-                print(f"    NINGUNA persona matched tiene horas en Factorial!")
-                # Check if any employee has hours at all
-                total_any = sum(sum(v.values()) for v in all_attendance.values())
-                print(f"    Total horas en all_attendance: {total_any:.1f}h para {len(all_attendance)} empleados")
-
             comparison_data = build_comparison_data(
                 raw, matched, all_attendance, months,
                 daily_jira=daily_raw, daily_factorial=all_attendance_daily
