@@ -122,9 +122,12 @@ class FactorialClient:
     def get_attendance_range(self, date_from, date_to):
         """Fetch attendance per month in range YYYY-MM to YYYY-MM.
 
-        Returns: {employee_id -> {month_key -> total_hours}}
+        Returns: (monthly, daily)
+          monthly: {employee_id -> {month_key -> total_hours}}
+          daily:   {employee_id -> {date_str -> total_hours}}
         """
-        result = defaultdict(lambda: defaultdict(float))
+        monthly = defaultdict(lambda: defaultdict(float))
+        daily = defaultdict(lambda: defaultdict(float))
 
         y, m = int(date_from[:4]), int(date_from[5:7])
         end_y, end_m = int(date_to[:4]), int(date_to[5:7])
@@ -140,23 +143,26 @@ class FactorialClient:
                 if not emp_id or not clock_in or not clock_out:
                     continue
                 try:
-                    # minutes field is available in new API
+                    hours = 0
+                    day_str = rec.get("date") or ""
                     minutes = rec.get("minutes")
                     if minutes is not None and minutes > 0:
-                        result[emp_id][month_key] += minutes / 60
+                        hours = minutes / 60
                     elif "T" in clock_in:
                         from datetime import datetime as dt
                         t_in = dt.fromisoformat(clock_in.replace("Z", "+00:00"))
                         t_out = dt.fromisoformat(clock_out.replace("Z", "+00:00"))
                         hours = (t_out - t_in).total_seconds() / 3600
-                        if hours > 0:
-                            result[emp_id][month_key] += hours
+                        if not day_str:
+                            day_str = t_in.strftime("%Y-%m-%d")
                     else:
                         h_in, m_in = map(int, clock_in.split(":"))
                         h_out, m_out = map(int, clock_out.split(":"))
                         hours = (h_out * 60 + m_out - h_in * 60 - m_in) / 60
-                        if hours > 0:
-                            result[emp_id][month_key] += hours
+                    if hours > 0:
+                        monthly[emp_id][month_key] += hours
+                        if day_str:
+                            daily[emp_id][day_str] += hours
                 except (ValueError, TypeError):
                     pass
             m += 1
@@ -164,7 +170,7 @@ class FactorialClient:
                 m = 1
                 y += 1
 
-        return result
+        return monthly, daily
 
     # ── Leaves / Absences ────────────────────────────────────────
 

@@ -60,7 +60,9 @@ def fetch_group_members(client, keyword="reportes"):
 def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
     """Fetch worklogs with task-level detail.
 
-    Returns: user -> month -> [{key, summary, hours}]
+    Returns: (raw, daily_raw)
+      raw: user -> month -> issue_key -> {summary, hours, ...}
+      daily_raw: user -> date_str -> hours (for Factorial comparison)
     """
     to_y, to_m = int(date_to[:4]), int(date_to[5:7])
     last_day = calendar.monthrange(to_y, to_m)[1]
@@ -81,6 +83,8 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
 
     # user -> month -> issue_key -> {summary, hours}
     raw = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {"summary": "", "hours": 0.0})))
+    # user -> date_str -> hours (daily aggregate for comparison)
+    daily_raw = defaultdict(lambda: defaultdict(float))
     total_wl = 0
 
     for idx, issue in enumerate(issues):
@@ -118,20 +122,23 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
                 continue
 
             seconds = wl.get("timeSpentSeconds", 0)
+            hours = seconds / 3600
             month_key = f"{wl_date.year}-{wl_date.month:02d}"
+            day_key = f"{wl_date.year}-{wl_date.month:02d}-{wl_date.day:02d}"
             entry = raw[author_name][month_key][issue_key]
             entry["summary"] = summary
-            entry["hours"] += seconds / 3600
+            entry["hours"] += hours
             entry["cliente_global"] = cliente_global
             entry["neuro360"] = neuro360
             entry["neuro360_child"] = n360_child
+            daily_raw[author_name][day_key] += hours
             total_wl += 1
 
         if (idx + 1) % 50 == 0:
             print(f"  {idx + 1}/{len(issues)} issues procesadas...")
 
     print(f"  {total_wl} worklogs procesados")
-    return raw
+    return raw, daily_raw
 
 
 def _search_jql_direct(client, jql, fields):
@@ -299,13 +306,26 @@ def build_employee_match(jira_emails, fact_employees, groups_info):
     return matched, unmatched_jira, unmatched_factorial
 
 
-def build_comparison_data(raw, matched, attendance, months):
-    """Build JIRA vs Factorial hours comparison per person per month."""
+def build_comparison_data(raw, matched, attendance, months,
+                          daily_jira=None, daily_factorial=None):
+    """Build JIRA vs Factorial hours comparison with daily detail.
+
+    Structure: {user: {months: {m: {jira, factorial, days: {d: {jira, factorial}}}}}}
+    """
+    from datetime import date as dt_date
+    daily_jira = daily_jira or {}
+    daily_factorial = daily_factorial or {}
     comparison = {}
+
     for display_name, match_info in sorted(matched.items()):
         fact_id = match_info["factorial_id"]
         fact_attendance = attendance.get(fact_id, {})
-        person = {"months": {}, "totals": {"jira": 0, "factorial": 0}}
+        fact_daily = daily_factorial.get(fact_id, {})
+        jira_daily = daily_jira.get(display_name, {})
+
+        person = {"months": {}}
+        total_j, total_f = 0, 0
+
         for m in months:
             jira_h = 0
             if display_name in raw:
@@ -313,13 +333,23 @@ def build_comparison_data(raw, matched, attendance, months):
                     jira_h += info["hours"]
             jira_h = round(jira_h, 1)
             fact_h = round(fact_attendance.get(m, 0), 1)
-            diff = round(jira_h - fact_h, 1)
-            person["months"][m] = {"jira": jira_h, "factorial": fact_h, "diff": diff}
-            person["totals"]["jira"] += jira_h
-            person["totals"]["factorial"] += fact_h
-        person["totals"]["jira"] = round(person["totals"]["jira"], 1)
-        person["totals"]["factorial"] = round(person["totals"]["factorial"], 1)
-        if person["totals"]["jira"] > 0 or person["totals"]["factorial"] > 0:
+
+            # Collect daily data for this month
+            y, mo = int(m[:4]), int(m[5:7])
+            days_in_month = calendar.monthrange(y, mo)[1]
+            days = {}
+            for d in range(1, days_in_month + 1):
+                day_str = f"{m}-{d:02d}"
+                dj = round(jira_daily.get(day_str, 0), 1)
+                df = round(fact_daily.get(day_str, 0), 1)
+                if dj > 0 or df > 0:
+                    days[day_str] = {"jira": dj, "factorial": df}
+
+            person["months"][m] = {"jira": jira_h, "factorial": fact_h, "days": days}
+            total_j += jira_h
+            total_f += fact_h
+
+        if total_j > 0 or total_f > 0:
             comparison[display_name] = person
     return comparison
 
@@ -817,14 +847,14 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
     <button onclick="collapseAll('cpBody')">Colapsar todo</button>
   </div>
   <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px;">
-    Comparaci&oacute;n de horas reportadas en JIRA vs fichajes en Factorial HR.
+    Comparaci&oacute;n de horas JIRA vs fichajes Factorial. Expandir: usuario &rarr; mes &rarr; d&iacute;a.
     <span style="color:var(--green)">&FilledSmallSquare; &lt;10%</span>
     <span style="color:var(--amber)">&FilledSmallSquare; 10-25%</span>
     <span style="color:#ef4444">&FilledSmallSquare; &gt;25%</span>
   </p>
   <div class="table-wrap">
     <table>
-      <thead id="cpHead"></thead>
+      <thead id="cpHead"><tr><th style="text-align:left">Nombre</th><th style="color:var(--blue)">JIRA h</th><th style="color:var(--purple)">Factorial h</th><th>Diff</th><th>%</th></tr></thead>
       <tbody id="cpBody"></tbody>
     </table>
   </div>
@@ -1290,62 +1320,79 @@ function buildChanges() {{
   document.getElementById('chBody').innerHTML = html;
 }}
 
+function cpDiffCell(j, f) {{
+  const diff = j - f;
+  const pct = f > 0 ? Math.abs(diff / f * 100) : (j > 0 ? 100 : 0);
+  const bg = pct <= 10 ? '' : pct <= 25 ? 'background:#fef3c7;' : 'background:#fecaca;';
+  const sign = diff > 0 ? '+' : '';
+  return '<td style="' + bg + '">' + sign + diff.toFixed(1) + '</td><td style="' + bg + '">' + pct.toFixed(0) + '%</td>';
+}}
+
+const DAYNAMES = ['Dom','Lun','Mar','Mi\u00e9','Jue','Vie','S\u00e1b'];
+
 function buildComparison() {{
   const vm = getVisibleMonths();
-  const cols = getColumns(vm);
-  // Build header
-  const yg = getYearGroups(vm);
-  const years = Object.keys(yg).sort();
-  let yr = '<tr class="year-row"><th></th>';
-  years.forEach(y => {{
-    const cl = collapsedYears.has(y);
-    const span = cl ? 1 : yg[y].length;
-    const arrow = cl ? '&#9654;' : '&#9660;';
-    yr += '<th colspan="' + (span * 2) + '" class="year-th" onclick="toggleYear(\\'' + y + '\\')">' + arrow + ' ' + y + '</th>';
-  }});
-  yr += '<th colspan="2"></th></tr>';
-  let mr = '<tr><th>Empleado</th>';
-  cols.forEach(c => {{
-    const lbl = c.type === 'year' ? 'Total' : MNAMES[c.month.slice(5)];
-    mr += '<th style="color:var(--blue)">J</th><th style="color:var(--purple)">F</th>';
-  }});
-  mr += '<th style="color:var(--blue)">JIRA</th><th style="color:var(--purple)">FACT</th></tr>';
-  document.getElementById('cpHead').innerHTML = yr + mr;
+  Object.keys(LAZY).forEach(k => {{ if (k.startsWith('cp')) delete LAZY[k]; }});
 
   const users = Object.keys(COMPARISON).sort(sortES);
   let html = '';
-  let tJira = 0, tFact = 0;
+  let rid = 0;
+  let tJ = 0, tF = 0;
 
   users.forEach(user => {{
     const p = COMPARISON[user];
     let uJ = 0, uF = 0;
-    let cells = '';
-    cols.forEach(c => {{
-      let j = 0, f = 0;
-      if (c.type === 'year') {{
-        c.months.forEach(m => {{
-          const d = p.months[m] || {{jira:0,factorial:0}};
-          j += d.jira; f += d.factorial;
-        }});
-      }} else {{
-        const d = p.months[c.month] || {{jira:0,factorial:0}};
-        j = d.jira; f = d.factorial;
-      }}
-      uJ += j; uF += f;
-      const pct = f > 0 ? Math.abs((j - f) / f * 100) : (j > 0 ? 100 : 0);
-      const bg = pct <= 10 ? '' : pct <= 25 ? 'background:#fef3c7;' : 'background:#fecaca;';
-      cells += '<td style="' + bg + '">' + fmt(j) + '</td><td style="' + bg + '">' + fmt(f) + '</td>';
+    vm.forEach(m => {{
+      const d = p.months[m] || {{jira:0,factorial:0}};
+      uJ += d.jira; uF += d.factorial;
     }});
     if (uJ === 0 && uF === 0) return;
-    tJira += uJ; tFact += uF;
-    html += '<tr class="row-l0"><td style="text-align:left;position:sticky;left:0;background:var(--card);z-index:1">' +
-      user + '</td>' + cells +
-      '<td class="total">' + uJ.toFixed(1) + '</td><td class="total" style="color:var(--purple)">' + uF.toFixed(1) + '</td></tr>\\n';
+    tJ += uJ; tF += uF;
+    const uid = 'cp' + (rid++);
+
+    html += '<tr class="row-l0" data-id="' + uid + '">' +
+      '<td onclick="toggle(\\'' + uid + '\\')" style="text-align:left">' +
+      '<span class="arrow">&#9654;</span> ' + user + '</td>' +
+      '<td style="color:var(--blue)">' + uJ.toFixed(1) + '</td>' +
+      '<td style="color:var(--purple)">' + uF.toFixed(1) + '</td>' +
+      cpDiffCell(uJ, uF) + '</tr>\\n';
+
+    let mch = '';
+    vm.forEach(m => {{
+      const md = p.months[m] || {{jira:0,factorial:0,days:{{}}}};
+      if (md.jira === 0 && md.factorial === 0) return;
+      const mid = 'cp' + (rid++);
+      const mLabel = MNAMES[m.slice(5)] + ' ' + m.slice(0,4);
+
+      mch += '<tr class="row-l1" data-id="' + mid + '" data-parent="' + uid + '" style="display:none">' +
+        '<td onclick="toggle(\\'' + mid + '\\')" style="padding-left:24px;text-align:left">' +
+        '<span class="arrow">&#9654;</span> ' + mLabel + '</td>' +
+        '<td style="color:var(--blue)">' + md.jira.toFixed(1) + '</td>' +
+        '<td style="color:var(--purple)">' + md.factorial.toFixed(1) + '</td>' +
+        cpDiffCell(md.jira, md.factorial) + '</tr>\\n';
+
+      let dch = '';
+      const days = md.days || {{}};
+      Object.keys(days).sort().forEach(day => {{
+        const dd = days[day];
+        const dt = new Date(day + 'T12:00:00');
+        const dayName = DAYNAMES[dt.getDay()];
+        const dayLabel = dayName + ' ' + parseInt(day.slice(8));
+        dch += '<tr class="row-l2" data-parent="' + mid + '" style="display:none">' +
+          '<td style="padding-left:48px;text-align:left">' + dayLabel + '</td>' +
+          '<td style="color:var(--blue)">' + dd.jira.toFixed(1) + '</td>' +
+          '<td style="color:var(--purple)">' + dd.factorial.toFixed(1) + '</td>' +
+          cpDiffCell(dd.jira, dd.factorial) + '</tr>\\n';
+      }});
+      LAZY[mid] = dch;
+    }});
+    LAZY[uid] = mch;
   }});
 
-  html += '<tr class="row-totals"><td>TOTAL</td>';
-  cols.forEach(c => html += '<td></td><td></td>');
-  html += '<td class="total grand">' + tJira.toFixed(1) + '</td><td class="total" style="color:var(--purple);font-size:0.9rem;font-weight:700">' + tFact.toFixed(1) + '</td></tr>';
+  html += '<tr class="row-totals"><td>TOTAL</td>' +
+    '<td class="total" style="color:var(--blue)">' + tJ.toFixed(1) + '</td>' +
+    '<td class="total" style="color:var(--purple)">' + tF.toFixed(1) + '</td>' +
+    cpDiffCell(tJ, tF) + '</tr>';
   document.getElementById('cpBody').innerHTML = html;
 }}
 
@@ -1489,7 +1536,7 @@ def main():
             allowed_ids = None
 
     months = build_months(args.date_from, args.date_to)
-    raw = fetch_worklogs(client, args.date_from, args.date_to, allowed_ids)
+    raw, daily_raw = fetch_worklogs(client, args.date_from, args.date_to, allowed_ids)
 
     if not raw:
         print("Aviso: No se encontraron worklogs en el rango de fechas. Generando informe vacío.")
@@ -1520,6 +1567,7 @@ def main():
             # Collect employees, attendance and leaves from all Factorial companies
             all_fact_employees = {}
             all_attendance = defaultdict(lambda: defaultdict(float))
+            all_attendance_daily = defaultdict(lambda: defaultdict(float))
             all_leaves_raw = defaultdict(list)
 
             for key_idx, api_key in enumerate(config.factorial_api_keys, 1):
@@ -1533,10 +1581,13 @@ def main():
                 all_fact_employees.update(emp_map)
 
                 print(f"  Obteniendo fichajes...")
-                att = fact_client.get_attendance_range(args.date_from, args.date_to)
-                for emp_id, months_data in att.items():
+                att_monthly, att_daily = fact_client.get_attendance_range(args.date_from, args.date_to)
+                for emp_id, months_data in att_monthly.items():
                     for m, hours in months_data.items():
                         all_attendance[emp_id][m] += hours
+                for emp_id, days_data in att_daily.items():
+                    for d, hours in days_data.items():
+                        all_attendance_daily[emp_id][d] += hours
 
                 print(f"  Obteniendo ausencias...")
                 lvs = fact_client.get_leaves_in_range(args.date_from, args.date_to)
@@ -1556,7 +1607,10 @@ def main():
                 "unmatched_factorial": len(unmatched_f),
             }
 
-            comparison_data = build_comparison_data(raw, matched, all_attendance, months)
+            comparison_data = build_comparison_data(
+                raw, matched, all_attendance, months,
+                daily_jira=daily_raw, daily_factorial=all_attendance_daily
+            )
             leaves_data = build_leaves_data(matched, all_leaves_raw)
             print(f"  {len(comparison_data)} personas en comparación, "
                   f"{len(leaves_data)} con ausencias")
