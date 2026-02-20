@@ -57,6 +57,73 @@ def fetch_group_members(client, keyword="reportes"):
     return members
 
 
+def find_terminated_jira_accounts(client, fact_employees, date_from, date_to,
+                                   existing_ids):
+    """Find JIRA accounts for terminated Factorial employees active in period.
+
+    Returns: dict {accountId: {displayName, groups, archived, terminated_on}}
+    """
+    from datetime import date as dt_date
+
+    today = dt_date.today()
+    range_start = f"{date_from}-01"
+    to_y, to_m = int(date_to[:4]), int(date_to[5:7])
+    range_end_day = calendar.monthrange(to_y, to_m)[1]
+    range_end = f"{date_to}-{range_end_day:02d}"
+
+    # Filter to terminated employees who overlapped with the report period
+    terminated = {}
+    for email, emp in fact_employees.items():
+        term_date = emp.get("terminated_on")
+        if not term_date:
+            continue
+        start_date = emp.get("start_date") or "2000-01-01"
+        if start_date > range_end or term_date < range_start:
+            continue
+        terminated[email] = emp
+
+    if not terminated:
+        return {}
+
+    print(f"  {len(terminated)} empleados terminados activos en el periodo")
+
+    # Search JIRA for their accounts by email
+    found = {}
+    search_url = f"{client.config.api_url}/user/search"
+    for idx, (email, emp) in enumerate(terminated.items()):
+        try:
+            resp = client._request("GET", search_url,
+                                   params={"query": email, "maxResults": 5})
+            users = resp.json()
+            for u in users:
+                aid = u.get("accountId", "")
+                u_email = (u.get("emailAddress") or "").strip().lower()
+                if aid and aid not in existing_ids and u_email == email:
+                    # M+2 archive: archived if 2+ months past termination
+                    term_dt = dt_date.fromisoformat(emp["terminated_on"])
+                    archive_m = term_dt.month + 2
+                    archive_y = term_dt.year
+                    if archive_m > 12:
+                        archive_m -= 12
+                        archive_y += 1
+                    is_archived = today >= dt_date(archive_y, archive_m, 1)
+
+                    found[aid] = {
+                        "displayName": u.get("displayName", emp["full_name"]),
+                        "groups": ["Archivados"],
+                        "archived": is_archived,
+                        "terminated_on": emp["terminated_on"],
+                    }
+                    break
+        except Exception:
+            pass
+        if (idx + 1) % 20 == 0:
+            print(f"    {idx + 1}/{len(terminated)} buscados en JIRA...")
+
+    print(f"  {len(found)} cuentas JIRA encontradas para empleados terminados")
+    return found
+
+
 def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
     """Fetch worklogs with task-level detail.
 
@@ -421,7 +488,7 @@ def generate_csv(raw, months, output_path):
 
 def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output_path,
                    client_changes=None, comparison_data=None, leaves_data=None,
-                   factorial_stats=None):
+                   factorial_stats=None, archived_users=None):
     """Generate interactive HTML with tabs: Personal, Neuro360, Cambios Cliente, + Factorial."""
 
     def _norm(val, default=""):
@@ -717,6 +784,12 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   .year-th:hover {{ background: #dce3ed !important; }}
 
   .zero {{ color: #cbd5e1; }}
+  .archived-name {{ opacity: 0.55; }}
+  .badge-archived {{ display: inline-block; font-size: 0.6rem; padding: 1px 6px; border-radius: 8px; margin-left: 6px; font-weight: 500; vertical-align: middle; }}
+  .badge-archived.arch {{ background: #e2e8f0; color: #64748b; }}
+  .badge-archived.baja {{ background: #fef3c7; color: #92400e; }}
+  .archive-toggle {{ display: inline-flex; align-items: center; gap: 4px; font-size: 0.78rem; color: var(--muted); margin-left: 12px; cursor: pointer; }}
+  .archive-toggle input {{ cursor: pointer; }}
   .footer {{ text-align: center; color: var(--muted); font-size: 0.7rem; margin-top: 24px; }}
   @media print {{
     body {{ padding: 0; font-size: 0.65rem; }}
@@ -768,6 +841,9 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
     </div>
     <button onclick="expandAll('pBody')">Expandir todo</button>
     <button onclick="collapseAll('pBody')">Colapsar todo</button>
+    <label class="archive-toggle" style="display:{{'inline-flex' if archived_users else 'none'}}">
+      <input type="checkbox" id="showArchived" onchange="debounce(buildPersonal)"> Mostrar archivados
+    </label>
   </div>
   <div class="table-wrap">
     <table>
@@ -834,6 +910,9 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   <div class="controls">
     <button onclick="expandAll('cpBody')">Expandir todo</button>
     <button onclick="collapseAll('cpBody')">Colapsar todo</button>
+    <label class="archive-toggle" style="display:{{'inline-flex' if archived_users else 'none'}}">
+      <input type="checkbox" id="showArchivedCp" onchange="debounce(buildComparison)"> Mostrar archivados
+    </label>
   </div>
   <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px;">
     Comparaci&oacute;n de horas JIRA vs fichajes Factorial. Expandir: usuario &rarr; mes &rarr; d&iacute;a.
@@ -874,6 +953,7 @@ const FSTATS = {json.dumps(factorial_stats or dict(), ensure_ascii=False)};
 const ALL_MONTHS = {json.dumps(months)};
 const USER_GROUPS = {json.dumps(user_groups_map, ensure_ascii=False)};
 const CLIENT_MAP = {json.dumps(issue_client_map, ensure_ascii=False)};
+const ARCHIVED = {json.dumps(archived_users or dict(), ensure_ascii=False)};
 const JIRA = "{jira_url}";
 const MNAMES = {json.dumps(MONTH_NAMES)};
 const collapsedYears = new Set();
@@ -1055,6 +1135,15 @@ document.addEventListener('click', function(e) {{
   }});
 }});
 
+function isArchived(user) {{ return !!(ARCHIVED[user] && ARCHIVED[user].archived); }}
+function archBadge(user) {{
+  const a = ARCHIVED[user];
+  if (!a) return '';
+  return a.archived
+    ? ' <span class="badge-archived arch">Archivado</span>'
+    : ' <span class="badge-archived baja">Baja ' + a.terminated_on + '</span>';
+}}
+
 function buildPersonal() {{
   updateGroupLabel();
   updateClientLabel();
@@ -1062,6 +1151,7 @@ function buildPersonal() {{
   const cols = getColumns(vm);
   const selGroups = getSelectedGroups();
   const selClients = getSelectedClients();
+  const showArch = document.getElementById('showArchived') && document.getElementById('showArchived').checked;
   buildHeaders('pHead', 'pBody');
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('p')) delete LAZY[k]; }});
 
@@ -1091,12 +1181,19 @@ function buildPersonal() {{
     }});
     if (uTotal === 0) return;
 
-    let cells = '';
-    cols.forEach((c, i) => {{ const v = colVal(uM, c); mTotals[i] += v; cells += '<td>' + fmt(v) + '</td>'; }});
+    // Always count in totals, even if archived and hidden
+    cols.forEach((c, i) => mTotals[i] += colVal(uM, c));
     gt += uTotal;
-    html += '<tr class="row-l0" data-id="' + uid + '">' +
+
+    // Skip row rendering for archived users when toggle is off
+    if (!showArch && isArchived(user)) return;
+
+    let cells = '';
+    cols.forEach(c => cells += '<td>' + fmt(colVal(uM, c)) + '</td>');
+    const archCls = ARCHIVED[user] ? ' archived-name' : '';
+    html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')">' +
-      '<span class="arrow">&#9654;</span> ' + user + '</td>' + cells +
+      '<span class="arrow">&#9654;</span> ' + user + archBadge(user) + '</td>' + cells +
       '<td class="total">' + uTotal.toFixed(1) + '</td></tr>\\n';
 
     let ch = '';
@@ -1321,6 +1418,7 @@ const DAYNAMES = ['Dom','Lun','Mar','Mi\u00e9','Jue','Vie','S\u00e1b'];
 
 function buildComparison() {{
   const vm = getVisibleMonths();
+  const showArch = document.getElementById('showArchivedCp') && document.getElementById('showArchivedCp').checked;
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('cp')) delete LAZY[k]; }});
 
   const users = Object.keys(COMPARISON).sort(sortES);
@@ -1337,11 +1435,13 @@ function buildComparison() {{
     }});
     if (uJ === 0 && uF === 0) return;
     tJ += uJ; tF += uF;
+    if (!showArch && isArchived(user)) return;
     const uid = 'cp' + (rid++);
 
-    html += '<tr class="row-l0" data-id="' + uid + '">' +
+    const archCls = ARCHIVED[user] ? ' archived-name' : '';
+    html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')" style="text-align:left">' +
-      '<span class="arrow">&#9654;</span> ' + user + '</td>' +
+      '<span class="arrow">&#9654;</span> ' + user + archBadge(user) + '</td>' +
       '<td style="color:var(--blue)">' + uJ.toFixed(1) + '</td>' +
       '<td style="color:var(--purple)">' + uF.toFixed(1) + '</td>' +
       cpDiffCell(uJ, uF) + '</tr>\\n';
@@ -1408,11 +1508,13 @@ function buildLeaves() {{
       byMonth[mk].push(e);
     }});
     totalDays += uDays;
+    if (isArchived(user)) return;
     const typeSummary = Object.entries(typeDays).map(([t, d]) => t + ' (' + d + 'd)').join(', ');
 
-    html += '<tr class="row-l0" data-id="' + uid + '">' +
+    const archCls = ARCHIVED[user] ? ' archived-name' : '';
+    html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')" style="text-align:left;position:sticky;left:0;background:var(--card);z-index:1">' +
-      '<span class="arrow">&#9654;</span> ' + user + '</td>' +
+      '<span class="arrow">&#9654;</span> ' + user + archBadge(user) + '</td>' +
       '<td style="text-align:left;font-size:0.75rem;color:var(--muted)">' + typeSummary + '</td><td></td><td></td><td></td><td class="total">' + uDays + '</td></tr>\\n';
 
     // Month-level rows (L1) with detail rows (L2) inside
@@ -1553,6 +1655,40 @@ def main():
             print("Aviso: No se encontraron usuarios en grupos 'reportes'. Usando todos.")
             allowed_ids = None
 
+    # Early Factorial: fetch employees to include terminated ones in worklogs
+    all_fact_employees = {}
+    archived_users = {}  # displayName -> {terminated_on, archived}
+    if config.factorial_enabled and allowed_ids:
+        try:
+            from factorial_client import FactorialClient
+            print("\n── Factorial: empleados ──────────────────")
+            for api_key in config.factorial_api_keys:
+                fc_config = type(config).__new__(type(config))
+                fc_config.factorial_api_key = api_key
+                fact_client = FactorialClient(fc_config)
+                emp_map = fact_client.get_employees_map()
+                all_fact_employees.update(emp_map)
+            print(f"  Total: {len(all_fact_employees)} empleados Factorial")
+
+            # Find terminated employees active in period → add to allowed_ids
+            terminated_accounts = find_terminated_jira_accounts(
+                client, all_fact_employees, args.date_from, args.date_to,
+                allowed_ids
+            )
+            for aid, info in terminated_accounts.items():
+                groups_info[aid] = info
+                allowed_ids.add(aid)
+                archived_users[info["displayName"]] = {
+                    "terminated_on": info["terminated_on"],
+                    "archived": info["archived"],
+                }
+            if archived_users:
+                print(f"  {len(archived_users)} empleados terminados añadidos al informe")
+        except Exception as e:
+            import traceback
+            print(f"Error buscando empleados terminados: {e}")
+            traceback.print_exc()
+
     months = build_months(args.date_from, args.date_to)
     raw, daily_raw = fetch_worklogs(client, args.date_from, args.date_to, allowed_ids)
 
@@ -1573,17 +1709,25 @@ def main():
         issue_keys_with_client=keys_with_client
     )
 
-    # Factorial integration (optional, supports multiple companies)
+    # Factorial integration: attendance, leaves, matching
     comparison_data = None
     leaves_data = None
     factorial_stats = None
     if config.factorial_enabled:
         try:
             from factorial_client import FactorialClient
-            print("\n── Factorial HR ──────────────────────────")
+            print("\n── Factorial HR: fichajes y ausencias ──────")
 
-            # Collect employees, attendance and leaves from all Factorial companies
-            all_fact_employees = {}
+            # If employees weren't fetched early, fetch now
+            if not all_fact_employees:
+                for api_key in config.factorial_api_keys:
+                    fc_config = type(config).__new__(type(config))
+                    fc_config.factorial_api_key = api_key
+                    fact_client = FactorialClient(fc_config)
+                    emp_map = fact_client.get_employees_map()
+                    all_fact_employees.update(emp_map)
+                print(f"  Total: {len(all_fact_employees)} empleados Factorial")
+
             all_attendance = defaultdict(lambda: defaultdict(float))
             all_attendance_daily = defaultdict(lambda: defaultdict(float))
             all_leaves_raw = defaultdict(list)
@@ -1593,10 +1737,6 @@ def main():
                 fc_config = type(config).__new__(type(config))
                 fc_config.factorial_api_key = api_key
                 fact_client = FactorialClient(fc_config)
-
-                print(f"  Obteniendo empleados...")
-                emp_map = fact_client.get_employees_map()
-                all_fact_employees.update(emp_map)
 
                 print(f"  Obteniendo fichajes...")
                 att_monthly, att_daily = fact_client.get_attendance_range(args.date_from, args.date_to)
@@ -1611,8 +1751,6 @@ def main():
                 lvs = fact_client.get_leaves_in_range(args.date_from, args.date_to)
                 for emp_id, leaves_list in lvs.items():
                     all_leaves_raw[emp_id].extend(leaves_list)
-
-            print(f"\n  Total: {len(all_fact_employees)} empleados Factorial combinados")
 
             jira_emails = fetch_jira_user_emails(client, set(groups_info.keys()))
 
@@ -1645,7 +1783,8 @@ def main():
         path = generate_html(raw, months, groups_info, args.date_from, args.date_to,
                              config.jira_url, out, client_changes=client_changes,
                              comparison_data=comparison_data, leaves_data=leaves_data,
-                             factorial_stats=factorial_stats)
+                             factorial_stats=factorial_stats,
+                             archived_users=archived_users)
 
     abs_path = os.path.abspath(path)
     print(f"\nInforme generado: {abs_path}")
