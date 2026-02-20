@@ -501,29 +501,18 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
             if key not in issue_worklogs:
                 continue
             issue_info = issue_worklogs[key]
-            # For each change, include worklog months where the change
-            # happened on or after day 5 of M+1 (late change).
             for change in changes_list:
                 change_date = change["date"]  # "YYYY-MM-DD"
-                filtered_months = {}
-                for m, h in issue_info["months"].items():
-                    y_m, mo_m = int(m[:4]), int(m[5:7])
-                    if mo_m == 12:
-                        cutoff = f"{y_m + 1}-01-05"
-                    else:
-                        cutoff = f"{y_m}-{mo_m + 1:02d}-05"
-                    if change_date >= cutoff:
-                        filtered_months[m] = h
-                if not filtered_months:
-                    continue
                 label = f'{change["from"]} \u2192 {change["to"]}'
                 if label not in changes_data:
                     changes_data[label] = {}
                 changes_data[label][key] = {
                     "summary": issue_info["summary"],
                     "change_date": change_date,
-                    "months": filtered_months,
+                    "months": issue_info["months"],
                 }
+
+        print(f"  issue_worklogs: {len(issue_worklogs)} issues, changes_data: {sum(len(v) for v in changes_data.values())} entradas en {len(changes_data)} transiciones")
 
     # Build user -> groups mapping
     user_groups_map = {}
@@ -1408,9 +1397,15 @@ function buildLeaves() {{
     const uid = 'lv' + (rid++);
     let uDays = 0;
     const typeDays = {{}};
+
+    // Group entries by month (YYYY-MM from start_date)
+    const byMonth = {{}};
     entries.forEach(e => {{
       uDays += e.days;
       typeDays[e.leave_type] = (typeDays[e.leave_type] || 0) + e.days;
+      const mk = e.start_date ? e.start_date.substring(0, 7) : '0000-00';
+      if (!byMonth[mk]) byMonth[mk] = [];
+      byMonth[mk].push(e);
     }});
     totalDays += uDays;
     const typeSummary = Object.entries(typeDays).map(([t, d]) => t + ' (' + d + 'd)').join(', ');
@@ -1420,17 +1415,40 @@ function buildLeaves() {{
       '<span class="arrow">&#9654;</span> ' + user + '</td>' +
       '<td style="text-align:left;font-size:0.75rem;color:var(--muted)">' + typeSummary + '</td><td></td><td></td><td></td><td class="total">' + uDays + '</td></tr>\\n';
 
-    let ch = '';
-    entries.forEach(e => {{
-      ch += '<tr class="row-l1" data-parent="' + uid + '" style="display:none">' +
-        '<td style="padding-left:32px;text-align:left;position:sticky;left:0;background:#fafbfc;z-index:1">&nbsp;</td>' +
-        '<td style="text-align:left">' + e.leave_type + '</td>' +
-        '<td>' + e.start_date + '</td>' +
-        '<td>' + e.end_date + '</td>' +
-        '<td>' + e.status + '</td>' +
-        '<td>' + e.days + '</td></tr>\\n';
+    // Month-level rows (L1) with detail rows (L2) inside
+    let mhtml = '';
+    const sortedMonths = Object.keys(byMonth).sort();
+    sortedMonths.forEach(mk => {{
+      const mEntries = byMonth[mk];
+      const mid = 'lv' + (rid++);
+      let mDays = 0;
+      const mTypeDays = {{}};
+      mEntries.forEach(e => {{
+        mDays += e.days;
+        mTypeDays[e.leave_type] = (mTypeDays[e.leave_type] || 0) + e.days;
+      }});
+      const mTypeSummary = Object.entries(mTypeDays).map(([t, d]) => t + ' (' + d + 'd)').join(', ');
+      const mLabel = MNAMES[mk.substring(5, 7)] + ' ' + mk.substring(0, 4);
+
+      mhtml += '<tr class="row-l1" data-parent="' + uid + '" data-id="' + mid + '" style="display:none">' +
+        '<td onclick="toggle(\\'' + mid + '\\')" style="padding-left:24px;text-align:left;position:sticky;left:0;background:#fafbfc;z-index:1">' +
+        '<span class="arrow">&#9654;</span> ' + mLabel + '</td>' +
+        '<td style="text-align:left;font-size:0.75rem;color:var(--muted)">' + mTypeSummary + '</td><td></td><td></td><td></td><td class="total">' + mDays + '</td></tr>\\n';
+
+      // Detail rows (L2)
+      let dhtml = '';
+      mEntries.forEach(e => {{
+        dhtml += '<tr class="row-l2" data-parent="' + mid + '" style="display:none">' +
+          '<td style="padding-left:48px;text-align:left;position:sticky;left:0;background:#f4f5f7;z-index:1">&nbsp;</td>' +
+          '<td style="text-align:left">' + e.leave_type + '</td>' +
+          '<td>' + e.start_date + '</td>' +
+          '<td>' + e.end_date + '</td>' +
+          '<td>' + e.status + '</td>' +
+          '<td>' + e.days + '</td></tr>\\n';
+      }});
+      LAZY[mid] = dhtml;
     }});
-    LAZY[uid] = ch;
+    LAZY[uid] = mhtml;
   }});
 
   html += '<tr class="row-totals"><td>TOTAL</td><td></td><td></td><td></td><td></td>' +
