@@ -566,10 +566,12 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
                 if child not in neuro_data[parent]:
                     neuro_data[parent][child] = {}
                 if key not in neuro_data[parent][child]:
-                    neuro_data[parent][child][key] = {"summary": info["summary"], "months": {}}
+                    neuro_data[parent][child][key] = {"summary": info["summary"], "months": {}, "users": []}
                 neuro_data[parent][child][key]["months"][m] = round(
                     neuro_data[parent][child][key]["months"].get(m, 0) + info["hours"], 1
                 )
+                if user not in neuro_data[parent][child][key]["users"]:
+                    neuro_data[parent][child][key]["users"].append(user)
 
     # Build changes data: change_label -> issue_key -> {summary, change_date, months}
     changes_data = {}
@@ -645,6 +647,18 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
     )
     group_items_ch = "".join(
         f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="debounce(buildChanges)">{g}</label>'
+        for g in group_names
+    )
+    group_items_n = "".join(
+        f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="debounce(buildNeuro)">{g}</label>'
+        for g in group_names
+    )
+    group_items_cp = "".join(
+        f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="debounce(buildComparison)">{g}</label>'
+        for g in group_names
+    )
+    group_items_lv = "".join(
+        f'<label class="ms-item"><input type="checkbox" value="{g}" onchange="debounce(buildLeaves)">{g}</label>'
         for g in group_names
     )
 
@@ -867,7 +881,7 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
     </div>
     <button onclick="expandAll('pBody')">Expandir todo</button>
     <button onclick="collapseAll('pBody')">Colapsar todo</button>
-    <label class="archive-toggle" style="display:{{'inline-flex' if archived_users else 'none'}}">
+    <label class="archive-toggle">
       <input type="checkbox" id="showArchived" onchange="debounce(buildPersonal)"> Mostrar archivados
     </label>
   </div>
@@ -881,6 +895,14 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 
 <div id="tabNeuro" class="tab-content">
   <div class="controls">
+    <div class="multi-select" id="groupSelectN">
+      <button type="button" class="ms-btn" onclick="document.getElementById('groupSelectN').classList.toggle('open')">
+        <span id="groupLabelN">Todos los grupos</span><span class="ms-arrow">&#9660;</span>
+      </button>
+      <div class="ms-panel">
+        {group_items_n}
+      </div>
+    </div>
     <div class="multi-select" id="clientSelectN">
       <button type="button" class="ms-btn" onclick="document.getElementById('clientSelectN').classList.toggle('open')">
         <span id="clientLabelN">Todos los clientes</span><span class="ms-arrow">&#9660;</span>
@@ -934,9 +956,17 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 
 <div id="tabCompare" class="tab-content">
   <div class="controls">
+    <div class="multi-select" id="groupSelectCp">
+      <button type="button" class="ms-btn" onclick="document.getElementById('groupSelectCp').classList.toggle('open')">
+        <span id="groupLabelCp">Todos los grupos</span><span class="ms-arrow">&#9660;</span>
+      </button>
+      <div class="ms-panel">
+        {group_items_cp}
+      </div>
+    </div>
     <button onclick="expandAll('cpBody')">Expandir todo</button>
     <button onclick="collapseAll('cpBody')">Colapsar todo</button>
-    <label class="archive-toggle" style="display:{{'inline-flex' if archived_users else 'none'}}">
+    <label class="archive-toggle">
       <input type="checkbox" id="showArchivedCp" onchange="debounce(buildComparison)"> Mostrar archivados
     </label>
   </div>
@@ -956,8 +986,19 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 
 <div id="tabLeaves" class="tab-content">
   <div class="controls">
+    <div class="multi-select" id="groupSelectLv">
+      <button type="button" class="ms-btn" onclick="document.getElementById('groupSelectLv').classList.toggle('open')">
+        <span id="groupLabelLv">Todos los grupos</span><span class="ms-arrow">&#9660;</span>
+      </button>
+      <div class="ms-panel">
+        {group_items_lv}
+      </div>
+    </div>
     <button onclick="expandAll('lvBody')">Expandir todo</button>
     <button onclick="collapseAll('lvBody')">Colapsar todo</button>
+    <label class="archive-toggle">
+      <input type="checkbox" id="showArchivedLv" onchange="debounce(buildLeaves)"> Mostrar archivados
+    </label>
   </div>
   <div class="table-wrap">
     <table>
@@ -1162,7 +1203,14 @@ document.addEventListener('click', function(e) {{
   }});
 }});
 
-function isArchived(user) {{ return !!(ARCHIVED[user] && ARCHIVED[user].archived); }}
+function isArchived(user) {{ return !!ARCHIVED[user]; }}
+function issueUsersOk(t, selGroups) {{
+  if (selGroups.length === 0) return true;
+  return (t.users || []).some(u => {{
+    const ug = USER_GROUPS[u] || [];
+    return selGroups.some(g => ug.includes(g));
+  }});
+}}
 function archBadge(user) {{
   const a = ARCHIVED[user];
   if (!a) return '';
@@ -1272,9 +1320,11 @@ function buildPersonal() {{
 }}
 
 function buildNeuro() {{
+  updateGroupLabel('groupSelectN', 'groupLabelN');
   updateClientLabel('clientSelectN', 'clientLabelN');
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
+  const selGroups = getSelectedGroups('groupSelectN');
   const selClients = getSelectedClients('clientSelectN');
   buildHeaders('nHead', 'nBody');
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('n')) delete LAZY[k]; }});
@@ -1296,6 +1346,7 @@ function buildNeuro() {{
     Object.values(children).forEach(tasks => {{
       Object.entries(tasks).forEach(([key, t]) => {{
         if (!issueClientOk(key, selClients)) return;
+        if (!issueUsersOk(t, selGroups)) return;
         vm.forEach(m => {{ const h = t.months[m] || 0; uM[m] += h; uTotal += h; }});
       }});
     }});
@@ -1318,6 +1369,7 @@ function buildNeuro() {{
       let cTotal = 0;
       Object.entries(tasks).forEach(([key, t]) => {{
         if (!issueClientOk(key, selClients)) return;
+        if (!issueUsersOk(t, selGroups)) return;
         vm.forEach(m => {{ const h = t.months[m] || 0; cM[m] += h; cTotal += h; }});
       }});
       if (cTotal === 0) return;
@@ -1333,6 +1385,7 @@ function buildNeuro() {{
       Object.keys(tasks).sort().forEach(issKey => {{
         if (!issueClientOk(issKey, selClients)) return;
         const t = tasks[issKey];
+        if (!issueUsersOk(t, selGroups)) return;
         const tM = {{}};
         vm.forEach(m => tM[m] = t.months[m] || 0);
         let tT = 0;
@@ -1444,7 +1497,9 @@ function cpDiffCell(j, f) {{
 const DAYNAMES = ['Dom','Lun','Mar','Mi\u00e9','Jue','Vie','S\u00e1b'];
 
 function buildComparison() {{
+  updateGroupLabel('groupSelectCp', 'groupLabelCp');
   const vm = getVisibleMonths();
+  const selGroups = getSelectedGroups('groupSelectCp');
   const showArch = document.getElementById('showArchivedCp') && document.getElementById('showArchivedCp').checked;
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('cp')) delete LAZY[k]; }});
 
@@ -1454,6 +1509,10 @@ function buildComparison() {{
   let tJ = 0, tF = 0;
 
   users.forEach(user => {{
+    if (selGroups.length > 0) {{
+      const ug = USER_GROUPS[user] || [];
+      if (!selGroups.some(g => ug.includes(g))) return;
+    }}
     const p = COMPARISON[user];
     let uJ = 0, uF = 0;
     vm.forEach(m => {{
@@ -1515,6 +1574,9 @@ function buildComparison() {{
 }}
 
 function buildLeaves() {{
+  updateGroupLabel('groupSelectLv', 'groupLabelLv');
+  const selGroups = getSelectedGroups('groupSelectLv');
+  const showArch = document.getElementById('showArchivedLv') && document.getElementById('showArchivedLv').checked;
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('lv')) delete LAZY[k]; }});
   const users = Object.keys(LEAVES).sort(sortES);
   let html = '';
@@ -1522,6 +1584,10 @@ function buildLeaves() {{
   let totalDays = 0;
 
   users.forEach(user => {{
+    if (selGroups.length > 0) {{
+      const ug = USER_GROUPS[user] || [];
+      if (!selGroups.some(g => ug.includes(g))) return;
+    }}
     const entries = LEAVES[user];
     const uid = 'lv' + (rid++);
     let uDays = 0;
@@ -1537,7 +1603,7 @@ function buildLeaves() {{
       byMonth[mk].push(e);
     }});
     totalDays += uDays;
-    if (isArchived(user)) return;
+    if (!showArch && isArchived(user)) return;
     const typeSummary = Object.entries(typeDays).map(([t, d]) => t + ' (' + d + 'd)').join(', ');
 
     const archCls = ARCHIVED[user] ? ' archived-name' : '';
