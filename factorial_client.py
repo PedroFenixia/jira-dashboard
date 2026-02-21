@@ -280,6 +280,23 @@ class FactorialClient:
         print(f"    {len(result)} festivos en rango")
         return result
 
+    # ── Leave Types ───────────────────────────────────────────────
+
+    def get_leave_types(self):
+        """GET timeoff/leave-types — leave type configurations.
+
+        Returns: {leave_type_id: name}
+        """
+        url = self._url("timeoff/leave-types")
+        types = self._paginate(url)
+        result = {}
+        for lt in types:
+            lt_id = lt.get("id")
+            if lt_id:
+                result[lt_id] = lt.get("name") or lt.get("description") or "Ausencia"
+        print(f"    {len(result)} tipos de ausencia configurados")
+        return result
+
     # ── Leaves / Absences ────────────────────────────────────────
 
     def get_leaves(self):
@@ -292,6 +309,7 @@ class FactorialClient:
 
         Returns: {employee_id -> [{start_date, end_date, leave_type, status}]}
         """
+        leave_types = self.get_leave_types()
         all_leaves = self.get_leaves()
         to_y, to_m = int(date_to[:4]), int(date_to[5:7])
         last_day = calendar.monthrange(to_y, to_m)[1]
@@ -318,14 +336,27 @@ class FactorialClient:
             if end >= range_start and start <= range_end:
                 emp_id = leave.get("employee_id")
                 if emp_id:
+                    # Resolve leave type name: try leave_type_id lookup first
+                    lt_id = leave.get("leave_type_id")
+                    lt_name = (leave_types.get(lt_id) if lt_id else None) \
+                              or leave.get("leave_type_name") \
+                              or leave.get("description") \
+                              or "Ausencia"
                     result[emp_id].append({
                         "start_date": start,
                         "end_date": end,
-                        "leave_type": leave.get("leave_type_name")
-                                      or leave.get("description")
-                                      or "Ausencia",
+                        "leave_type": lt_name,
                         "status": status,
                     })
 
-        print(f"  {sum(len(v) for v in result.values())} ausencias en rango")
+        # Summary by type
+        type_counts = defaultdict(int)
+        for entries in result.values():
+            for e in entries:
+                type_counts[e["leave_type"]] += 1
+        if type_counts:
+            summary = ", ".join(f"{t}: {c}" for t, c in sorted(type_counts.items()))
+            print(f"  {sum(type_counts.values())} ausencias en rango ({summary})")
+        else:
+            print(f"  0 ausencias en rango")
         return result
