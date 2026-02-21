@@ -640,6 +640,8 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
         for c in client_values
     )
 
+    holidays_map = {h["date"]: h["name"] for h in (holidays or [])}
+
     html = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -954,7 +956,7 @@ const ALL_MONTHS = {json.dumps(months)};
 const USER_GROUPS = {json.dumps(user_groups_map, ensure_ascii=False)};
 const CLIENT_MAP = {json.dumps(issue_client_map, ensure_ascii=False)};
 const ARCHIVED = {json.dumps(archived_users or dict(), ensure_ascii=False)};
-const HOLIDAYS = {json.dumps({{h["date"]: h["name"] for h in (holidays or [])}}, ensure_ascii=False)};
+const HOLIDAYS = {json.dumps(holidays_map, ensure_ascii=False)};
 const JIRA = "{jira_url}";
 const MNAMES = {json.dumps(MONTH_NAMES)};
 const collapsedYears = new Set();
