@@ -108,6 +108,21 @@ def find_factorial_jira_accounts(client, fact_employees, date_from, date_to,
                 if aid and u_email == email:
                     if aid in existing_ids:
                         already_in_groups += 1
+                        # Still mark as archived if terminated in Factorial
+                        term_date = emp.get("terminated_on")
+                        if term_date:
+                            display_name = u.get("displayName", emp["full_name"])
+                            term_dt = dt_date.fromisoformat(term_date)
+                            archive_m = term_dt.month + 2
+                            archive_y = term_dt.year
+                            if archive_m > 12:
+                                archive_m -= 12
+                                archive_y += 1
+                            is_archived = today >= dt_date(archive_y, archive_m, 1)
+                            archived_users[display_name] = {
+                                "terminated_on": term_date,
+                                "archived": is_archived,
+                            }
                         break
                     term_date = emp.get("terminated_on")
                     is_archived = False
@@ -1776,6 +1791,47 @@ def main():
             archived_users.update(new_archived)
             if new_accounts:
                 print(f"  {len(new_accounts)} empleados Factorial añadidos al informe")
+
+            # Name-based fallback: match JIRA group members to terminated
+            # Factorial employees (catches deactivated JIRA accounts not
+            # found by email search)
+            def _norm(name):
+                n = unicodedata.normalize('NFD', name)
+                n = ''.join(c for c in n if unicodedata.category(c) != 'Mn')
+                return ' '.join(n.lower().split())
+
+            fact_term_by_name = {}
+            for email, emp in all_fact_employees.items():
+                if emp.get("terminated_on"):
+                    fact_term_by_name[_norm(emp["full_name"])] = emp
+
+            name_matched = 0
+            already_known = {_norm(k) for k in archived_users}
+            from datetime import date as dt_date
+            today = dt_date.today()
+            for aid, info in groups_info.items():
+                dn = info["displayName"]
+                nn = _norm(dn)
+                if nn in already_known:
+                    continue
+                if nn in fact_term_by_name:
+                    emp = fact_term_by_name[nn]
+                    term_date = emp["terminated_on"]
+                    term_dt = dt_date.fromisoformat(term_date)
+                    archive_m = term_dt.month + 2
+                    archive_y = term_dt.year
+                    if archive_m > 12:
+                        archive_m -= 12
+                        archive_y += 1
+                    is_archived = today >= dt_date(archive_y, archive_m, 1)
+                    archived_users[dn] = {
+                        "terminated_on": term_date,
+                        "archived": is_archived,
+                    }
+                    name_matched += 1
+            if name_matched:
+                print(f"  {name_matched} archivados detectados por nombre")
+            print(f"  Total archivados: {len(archived_users)}")
         except Exception as e:
             import traceback
             print(f"Error buscando empleados Factorial en JIRA: {e}")
