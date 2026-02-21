@@ -57,11 +57,17 @@ def fetch_group_members(client, keyword="reportes"):
     return members
 
 
-def find_terminated_jira_accounts(client, fact_employees, date_from, date_to,
-                                   existing_ids):
-    """Find JIRA accounts for terminated Factorial employees active in period.
+def find_factorial_jira_accounts(client, fact_employees, date_from, date_to,
+                                  existing_ids):
+    """Find JIRA accounts for Factorial employees not already in report groups.
 
-    Returns: dict {accountId: {displayName, groups, archived, terminated_on}}
+    Searches ALL Factorial employees (active + terminated) in JIRA by email.
+    Skips those already in existing_ids (i.e. already in a 'reportes' group).
+    Terminated employees outside the report period are excluded.
+
+    Returns: (accounts, archived_users)
+      accounts: dict {accountId: {displayName, groups, archived, terminated_on}}
+      archived_users: dict {displayName: {terminated_on, archived}}
     """
     from datetime import date as dt_date
 
@@ -71,26 +77,27 @@ def find_terminated_jira_accounts(client, fact_employees, date_from, date_to,
     range_end_day = calendar.monthrange(to_y, to_m)[1]
     range_end = f"{date_to}-{range_end_day:02d}"
 
-    # Filter to terminated employees who overlapped with the report period
-    terminated = {}
+    # Build candidates: all active employees + terminated who overlapped period
+    candidates = {}
     for email, emp in fact_employees.items():
         term_date = emp.get("terminated_on")
-        if not term_date:
-            continue
-        start_date = emp.get("start_date") or "2000-01-01"
-        if start_date > range_end or term_date < range_start:
-            continue
-        terminated[email] = emp
+        if term_date:
+            start_date = emp.get("start_date") or "2000-01-01"
+            if start_date > range_end or term_date < range_start:
+                continue  # Terminated outside report period
+        candidates[email] = emp
 
-    if not terminated:
-        return {}
+    if not candidates:
+        return {}, {}
 
-    print(f"  {len(terminated)} empleados terminados activos en el periodo")
+    print(f"  Buscando {len(candidates)} empleados Factorial en JIRA...")
 
-    # Search JIRA for their accounts by email
     found = {}
+    archived_users = {}
+    already_in_groups = 0
     search_url = f"{client.config.api_url}/user/search"
-    for idx, (email, emp) in enumerate(terminated.items()):
+
+    for idx, (email, emp) in enumerate(candidates.items()):
         try:
             resp = client._request("GET", search_url,
                                    params={"query": email, "maxResults": 5})
@@ -98,30 +105,47 @@ def find_terminated_jira_accounts(client, fact_employees, date_from, date_to,
             for u in users:
                 aid = u.get("accountId", "")
                 u_email = (u.get("emailAddress") or "").strip().lower()
-                if aid and aid not in existing_ids and u_email == email:
-                    # M+2 archive: archived if 2+ months past termination
-                    term_dt = dt_date.fromisoformat(emp["terminated_on"])
-                    archive_m = term_dt.month + 2
-                    archive_y = term_dt.year
-                    if archive_m > 12:
-                        archive_m -= 12
-                        archive_y += 1
-                    is_archived = today >= dt_date(archive_y, archive_m, 1)
+                if aid and u_email == email:
+                    if aid in existing_ids:
+                        already_in_groups += 1
+                        break
+                    term_date = emp.get("terminated_on")
+                    is_archived = False
+                    if term_date:
+                        term_dt = dt_date.fromisoformat(term_date)
+                        archive_m = term_dt.month + 2
+                        archive_y = term_dt.year
+                        if archive_m > 12:
+                            archive_m -= 12
+                            archive_y += 1
+                        is_archived = today >= dt_date(archive_y, archive_m, 1)
+                        group = "Archivados"
+                    else:
+                        group = "Sin grupo JIRA"
 
+                    display_name = u.get("displayName", emp["full_name"])
                     found[aid] = {
-                        "displayName": u.get("displayName", emp["full_name"]),
-                        "groups": ["Archivados"],
+                        "displayName": display_name,
+                        "groups": [group],
                         "archived": is_archived,
-                        "terminated_on": emp["terminated_on"],
+                        "terminated_on": term_date,
                     }
+                    if term_date:
+                        archived_users[display_name] = {
+                            "terminated_on": term_date,
+                            "archived": is_archived,
+                        }
                     break
         except Exception:
             pass
         if (idx + 1) % 20 == 0:
-            print(f"    {idx + 1}/{len(terminated)} buscados en JIRA...")
+            print(f"    {idx + 1}/{len(candidates)} buscados...")
 
-    print(f"  {len(found)} cuentas JIRA encontradas para empleados terminados")
-    return found
+    active_found = sum(1 for v in found.values() if not v.get("terminated_on"))
+    term_found = sum(1 for v in found.values() if v.get("terminated_on"))
+    print(f"  Ya en grupos: {already_in_groups}, Nuevos: {active_found} activos + "
+          f"{term_found} terminados")
+    return found, archived_users
 
 
 def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
@@ -1660,7 +1684,7 @@ def main():
             print("Aviso: No se encontraron usuarios en grupos 'reportes'. Usando todos.")
             allowed_ids = None
 
-    # Early Factorial: fetch employees to include terminated ones in worklogs
+    # Early Factorial: fetch employees and find their JIRA accounts
     all_fact_employees = {}
     archived_users = {}  # displayName -> {terminated_on, archived}
     if config.factorial_enabled and allowed_ids:
@@ -1675,23 +1699,20 @@ def main():
                 all_fact_employees.update(emp_map)
             print(f"  Total: {len(all_fact_employees)} empleados Factorial")
 
-            # Find terminated employees active in period → add to allowed_ids
-            terminated_accounts = find_terminated_jira_accounts(
+            # Find ALL Factorial employees in JIRA (active + terminated)
+            new_accounts, new_archived = find_factorial_jira_accounts(
                 client, all_fact_employees, args.date_from, args.date_to,
                 allowed_ids
             )
-            for aid, info in terminated_accounts.items():
+            for aid, info in new_accounts.items():
                 groups_info[aid] = info
                 allowed_ids.add(aid)
-                archived_users[info["displayName"]] = {
-                    "terminated_on": info["terminated_on"],
-                    "archived": info["archived"],
-                }
-            if archived_users:
-                print(f"  {len(archived_users)} empleados terminados añadidos al informe")
+            archived_users.update(new_archived)
+            if new_accounts:
+                print(f"  {len(new_accounts)} empleados Factorial añadidos al informe")
         except Exception as e:
             import traceback
-            print(f"Error buscando empleados terminados: {e}")
+            print(f"Error buscando empleados Factorial en JIRA: {e}")
             traceback.print_exc()
 
     months = build_months(args.date_from, args.date_to)
