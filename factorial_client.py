@@ -111,6 +111,28 @@ class FactorialClient:
             }
         return result
 
+    # ── Break Configurations ─────────────────────────────────────
+
+    def get_break_configurations(self):
+        """GET attendance/break-configurations — paid/unpaid break configs.
+
+        Returns: {config_id: {name, paid}} indexed by both id and
+        time_settings_break_configuration_id for flexible lookup.
+        """
+        url = self._url("attendance/break-configurations")
+        configs = self._paginate(url)
+        result = {}
+        for cfg in configs:
+            paid = cfg.get("paid", False)
+            name = cfg.get("name", "")
+            for key_field in ("id", "time_settings_break_configuration_id"):
+                key = cfg.get(key_field)
+                if key:
+                    result[key] = {"name": name, "paid": paid}
+        paid_count = sum(1 for c in configs if c.get("paid"))
+        print(f"    {len(configs)} config. pausas ({paid_count} pagadas)")
+        return result
+
     # ── Attendance / Clock-in hours ──────────────────────────────
 
     def get_attendance(self, year, month):
@@ -124,6 +146,9 @@ class FactorialClient:
 
         The API returns ALL records regardless of year/month params,
         so we fetch once and filter by date field.
+
+        Includes paid break time: shift records with workable=false
+        that have a paid break configuration get their minutes added.
 
         Returns: (monthly, daily)
           monthly: {employee_id -> {month_key -> total_hours}}
@@ -143,6 +168,9 @@ class FactorialClient:
                 m = 1
                 y += 1
 
+        # Fetch break configurations to identify paid breaks
+        break_configs = self.get_break_configurations()
+
         # Fetch all records (API ignores year/month filter)
         print(f"  Factorial fichajes ({len(valid_months)} meses: {date_from} a {date_to})...")
         records = self.get_attendance(int(date_from[:4]), int(date_from[5:7]))
@@ -151,11 +179,10 @@ class FactorialClient:
         skipped = 0
         out_of_range = 0
         total_hours = 0
+        break_hours = 0
         for rec in records:
             emp_id = rec.get("employee_id")
-            clock_in = rec.get("clock_in") or ""
-            clock_out = rec.get("clock_out") or ""
-            if not emp_id or not clock_in or not clock_out:
+            if not emp_id:
                 skipped += 1
                 continue
             try:
@@ -168,6 +195,30 @@ class FactorialClient:
                 month_key = day_str[:7]  # "YYYY-MM"
                 if month_key not in valid_months:
                     out_of_range += 1
+                    continue
+
+                workable = rec.get("workable", True)
+
+                if not workable:
+                    # Break record — add minutes if it's a paid break
+                    break_cfg_id = rec.get("time_settings_break_configuration_id")
+                    is_paid = False
+                    if break_cfg_id and break_configs.get(break_cfg_id, {}).get("paid"):
+                        is_paid = True
+                    if is_paid:
+                        mins = rec.get("minutes") or 0
+                        if mins > 0:
+                            hours = mins / 60
+                            monthly[emp_id][month_key] += hours
+                            daily[emp_id][day_str] += hours
+                            break_hours += hours
+                    continue
+
+                # Normal work shift — require clock_in/clock_out
+                clock_in = rec.get("clock_in") or ""
+                clock_out = rec.get("clock_out") or ""
+                if not clock_in or not clock_out:
+                    skipped += 1
                     continue
 
                 # Prefer 'minutes' field (most reliable)
@@ -192,10 +243,42 @@ class FactorialClient:
             except (ValueError, TypeError):
                 skipped += 1
 
-        print(f"    En rango: {total_hours:.1f}h, fuera de rango: {out_of_range}, saltados: {skipped}")
+        print(f"    En rango: {total_hours:.1f}h trabajo + {break_hours:.1f}h pausas pagadas, "
+              f"fuera de rango: {out_of_range}, saltados: {skipped}")
         print(f"    {len(monthly)} empleados con fichajes en el rango")
 
         return monthly, daily
+
+    # ── Company Holidays ──────────────────────────────────────────
+
+    def get_company_holidays(self):
+        """GET holidays/company-holidays — all company holidays."""
+        url = self._url("holidays/company-holidays")
+        return self._paginate(url)
+
+    def get_holidays_in_range(self, date_from, date_to):
+        """Fetch company holidays in date range.
+
+        Returns: list of {date, name, location_id}
+        """
+        all_holidays = self.get_company_holidays()
+        to_y, to_m = int(date_to[:4]), int(date_to[5:7])
+        last_day = calendar.monthrange(to_y, to_m)[1]
+        range_start = f"{date_from}-01"
+        range_end = f"{date_to}-{last_day:02d}"
+
+        result = []
+        for h in all_holidays:
+            date = h.get("date") or h.get("start_date") or ""
+            if date and range_start <= date <= range_end:
+                result.append({
+                    "date": date,
+                    "name": h.get("name") or h.get("description") or "Festivo",
+                    "location_id": h.get("location_id"),
+                })
+
+        print(f"    {len(result)} festivos en rango")
+        return result
 
     # ── Leaves / Absences ────────────────────────────────────────
 

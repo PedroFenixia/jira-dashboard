@@ -488,7 +488,7 @@ def generate_csv(raw, months, output_path):
 
 def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output_path,
                    client_changes=None, comparison_data=None, leaves_data=None,
-                   factorial_stats=None, archived_users=None):
+                   factorial_stats=None, archived_users=None, holidays=None):
     """Generate interactive HTML with tabs: Personal, Neuro360, Cambios Cliente, + Factorial."""
 
     def _norm(val, default=""):
@@ -954,6 +954,7 @@ const ALL_MONTHS = {json.dumps(months)};
 const USER_GROUPS = {json.dumps(user_groups_map, ensure_ascii=False)};
 const CLIENT_MAP = {json.dumps(issue_client_map, ensure_ascii=False)};
 const ARCHIVED = {json.dumps(archived_users or dict(), ensure_ascii=False)};
+const HOLIDAYS = {json.dumps({{h["date"]: h["name"] for h in (holidays or [])}}, ensure_ascii=False)};
 const JIRA = "{jira_url}";
 const MNAMES = {json.dumps(MONTH_NAMES)};
 const collapsedYears = new Set();
@@ -1466,9 +1467,11 @@ function buildComparison() {{
         const dd = days[day];
         const dt = new Date(day + 'T12:00:00');
         const dayName = DAYNAMES[dt.getDay()];
+        const hol = HOLIDAYS[day];
+        const holBadge = hol ? ' <span style="font-size:0.6rem;background:#dbeafe;color:#1e40af;padding:1px 5px;border-radius:6px">' + hol + '</span>' : '';
         const dayLabel = dayName + ' ' + parseInt(day.slice(8));
         dch += '<tr class="row-l2" data-parent="' + mid + '" style="display:none">' +
-          '<td style="padding-left:48px;text-align:left">' + dayLabel + '</td>' +
+          '<td style="padding-left:48px;text-align:left">' + dayLabel + holBadge + '</td>' +
           '<td style="color:var(--blue)">' + dd.jira.toFixed(1) + '</td>' +
           '<td style="color:var(--purple)">' + dd.factorial.toFixed(1) + '</td>' +
           cpDiffCell(dd.jira, dd.factorial) + '</tr>\\n';
@@ -1713,6 +1716,7 @@ def main():
     comparison_data = None
     leaves_data = None
     factorial_stats = None
+    all_holidays = []
     if config.factorial_enabled:
         try:
             from factorial_client import FactorialClient
@@ -1752,6 +1756,14 @@ def main():
                 for emp_id, leaves_list in lvs.items():
                     all_leaves_raw[emp_id].extend(leaves_list)
 
+            # Fetch company holidays (use last client)
+            all_holidays = []
+            try:
+                print(f"  Obteniendo festivos...")
+                all_holidays = fact_client.get_holidays_in_range(args.date_from, args.date_to)
+            except Exception:
+                pass
+
             jira_emails = fetch_jira_user_emails(client, set(groups_info.keys()))
 
             matched, unmatched_j, unmatched_f = build_employee_match(
@@ -1784,7 +1796,8 @@ def main():
                              config.jira_url, out, client_changes=client_changes,
                              comparison_data=comparison_data, leaves_data=leaves_data,
                              factorial_stats=factorial_stats,
-                             archived_users=archived_users)
+                             archived_users=archived_users,
+                             holidays=all_holidays)
 
     abs_path = os.path.abspath(path)
     print(f"\nInforme generado: {abs_path}")
