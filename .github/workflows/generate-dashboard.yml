@@ -12,15 +12,13 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  group: dashboard-deploy
   cancel-in-progress: true
 
 jobs:
-  generate:
+  generate-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -43,21 +41,9 @@ jobs:
           FACTORIAL_API_KEY: ${{ secrets.FACTORIAL_API_KEY }}
         run: python report_hours.py --output _site/index.html
 
-      - name: Copy CNAME for custom domain
-        run: cp CNAME _site/CNAME
-
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: _site
-
-  deploy:
-    needs: generate
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+      - name: Deploy to OVH server
+        env:
+          OVH_SSH_PASS: ${{ secrets.OVH_SSH_PASS }}
+        run: |
+          sudo apt-get install -y sshpass
+          sshpass -p "$OVH_SSH_PASS" scp -o StrictHostKeyChecking=no _site/index.html root@91.134.43.229:/var/www/reporte.matizal.com/index.html
