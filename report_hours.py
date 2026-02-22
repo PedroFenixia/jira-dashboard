@@ -1639,9 +1639,19 @@ function buildLeaves() {{
       const mid = 'lv' + (rid++);
       let mDays = 0;
       const mTypeDays = {{}};
+      const mYear = parseInt(mk.substring(0, 4));
+      const mMonthIdx = parseInt(mk.substring(5, 7)) - 1;
+      const mFirstDay = new Date(mYear, mMonthIdx, 1);
+      const mLastDay = new Date(mYear, mMonthIdx + 1, 0);
       mEntries.forEach(e => {{
-        mDays += e.days;
-        mTypeDays[e.leave_type] = (mTypeDays[e.leave_type] || 0) + e.days;
+        // Count only days within this month
+        const sd = new Date(e.start_date + 'T00:00:00');
+        const ed = new Date(e.end_date + 'T00:00:00');
+        const from = sd > mFirstDay ? sd : mFirstDay;
+        const to = ed < mLastDay ? ed : mLastDay;
+        const dInMonth = Math.max(0, Math.round((to - from) / 86400000) + 1);
+        mDays += dInMonth;
+        mTypeDays[e.leave_type] = (mTypeDays[e.leave_type] || 0) + dInMonth;
       }});
       const mTypeSummary = Object.entries(mTypeDays).map(([t, d]) => t + ' (' + d + 'd)').join(', ');
       const mLabel = MNAMES[mk.substring(5, 7)] + ' ' + mk.substring(0, 4);
@@ -1651,16 +1661,30 @@ function buildLeaves() {{
         '<span class="arrow">&#9654;</span> ' + mLabel + '</td>' +
         '<td style="text-align:left;font-size:0.75rem;color:var(--muted)">' + mTypeSummary + '</td><td></td><td></td><td></td><td class="total">' + mDays + '</td></tr>\\n';
 
-      // Detail rows (L2)
+      // Detail rows (L2) — show individual days of this month
       let dhtml = '';
       mEntries.forEach(e => {{
+        // Calculate which days of this month (mk) are covered by this leave
+        const sd = new Date(e.start_date + 'T00:00:00');
+        const ed = new Date(e.end_date + 'T00:00:00');
+        const mYear = parseInt(mk.substring(0, 4));
+        const mMonth = parseInt(mk.substring(5, 7)) - 1;
+        const mStart = new Date(mYear, mMonth, 1);
+        const mEnd = new Date(mYear, mMonth + 1, 0); // last day of month
+        const from = sd > mStart ? sd : mStart;
+        const to = ed < mEnd ? ed : mEnd;
+        const dayNums = [];
+        for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {{
+          dayNums.push(d.getDate());
+        }}
+        const daysStr = dayNums.length > 0 ? dayNums.join(', ') : '-';
         dhtml += '<tr class="row-l2" data-parent="' + mid + '" style="display:none">' +
-          '<td style="padding-left:48px;text-align:left;position:sticky;left:0;background:#f4f5f7;z-index:1">&nbsp;</td>' +
-          '<td style="text-align:left">' + e.leave_type + '</td>' +
+          '<td style="padding-left:48px;text-align:left;position:sticky;left:0;background:#f4f5f7;z-index:1">' + e.leave_type + '</td>' +
+          '<td style="text-align:left;font-size:0.75rem;color:var(--muted)">Días: ' + daysStr + '</td>' +
           '<td>' + e.start_date + '</td>' +
           '<td>' + e.end_date + '</td>' +
           '<td>' + e.status + '</td>' +
-          '<td>' + e.days + '</td></tr>\\n';
+          '<td>' + dayNums.length + '</td></tr>\\n';
       }});
       LAZY[mid] = dhtml;
     }});

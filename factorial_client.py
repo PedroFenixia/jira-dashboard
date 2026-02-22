@@ -342,6 +342,14 @@ class FactorialClient:
                               or leave.get("leave_type_name") \
                               or leave.get("description") \
                               or "Ausencia"
+                    # Translate default English leave type names
+                    _TRANSLATIONS = {
+                        "holiday": "Vacaciones",
+                        "sick": "Baja médica",
+                        "parental": "Permiso parental",
+                        "overtime_compensation": "Compensación horas extra",
+                    }
+                    lt_name = _TRANSLATIONS.get(lt_name, lt_name)
                     result[emp_id].append({
                         "start_date": start,
                         "end_date": end,
