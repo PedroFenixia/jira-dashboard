@@ -908,12 +908,12 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   .row-totals td.grand {{ color: var(--green); font-size: 0.9rem; }}
 
   /* Year headers & alternating year bands */
-  .year-row th {{ background: #e8edf5; }}
+  .year-row th {{ background: #f0f0f0; }}
+  .year-row th.yb {{ background: #dde4f5; }}
   .year-th {{ cursor: pointer; text-align: center !important; font-size: 0.78rem; }}
-  .year-th:hover {{ background: #dce3ed !important; }}
+  .year-th:hover {{ opacity: 0.85; }}
   .yb {{ background: rgba(99,132,255,0.06); }}
   th.yb {{ background: rgba(99,132,255,0.12); }}
-  .year-row th.yb {{ background: #dde4f5; }}
 
   .zero {{ color: #cbd5e1; }}
   .archived-name {{ opacity: 0.55; }}
