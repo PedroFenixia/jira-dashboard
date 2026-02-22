@@ -1022,7 +1022,7 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   </p>
   <div class="table-wrap">
     <table>
-      <thead id="cpHead"><tr><th style="text-align:left">Nombre</th><th style="color:var(--blue)">JIRA h</th><th style="color:var(--purple)">Factorial h</th><th>Diff</th><th>%</th></tr></thead>
+      <thead id="cpHead"></thead>
       <tbody id="cpBody"></tbody>
     </table>
   </div>
@@ -1561,16 +1561,44 @@ function cpDiffCell(j, f) {{
 
 const DAYNAMES = ['Dom','Lun','Mar','Mi\u00e9','Jue','Vie','S\u00e1b'];
 
+function buildCpHeaders() {{
+  const vm = getVisibleMonths();
+  const cols = getColumns(vm);
+  const yg = getYearGroups(vm);
+  const years = Object.keys(yg).sort();
+  let yr = '<tr class="year-row"><th></th>';
+  years.forEach(y => {{
+    const cl = collapsedYears.has(y);
+    const span = cl ? 1 : yg[y].length;
+    const arrow = cl ? '&#9654;' : '&#9660;';
+    yr += '<th colspan="' + span + '" class="year-th" onclick="toggleYear(\\'' + y + '\\')">' + arrow + ' ' + y + '</th>';
+  }});
+  yr += '<th></th><th colspan="3" style="text-align:center;font-size:0.7rem">Comparaci\u00f3n</th></tr>';
+  const toggle = ' style="cursor:pointer;user-select:none" onclick="toggleAllRows(\\\'cpBody\\\')" title="Expandir / Colapsar todo"';
+  let mr = '<tr><th' + toggle + '><span class="arrow" style="font-size:0.65rem;margin-right:4px">&#9654;</span> Nombre</th>';
+  cols.forEach(c => {{
+    if (c.type === 'year') mr += '<th>Total</th>';
+    else mr += '<th>' + MNAMES[c.month.slice(5)] + '</th>';
+  }});
+  mr += '<th>TOTAL</th><th style="color:var(--purple)">Factorial</th><th>Diff</th><th>%</th></tr>';
+  document.getElementById('cpHead').innerHTML = yr + mr;
+}}
+
 function buildComparison() {{
   updateGroupLabel('groupSelectCp', 'groupLabelCp');
   const vm = getVisibleMonths();
+  const cols = getColumns(vm);
+  const nCols = cols.length;
   const selGroups = getSelectedGroups('groupSelectCp');
   const showArch = document.getElementById('showArchivedCp') && document.getElementById('showArchivedCp').checked;
+  buildCpHeaders();
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('cp')) delete LAZY[k]; }});
 
   const users = Object.keys(COMPARISON).sort(sortES);
   let html = '';
   let rid = 0;
+  const mTotals = {{}};
+  cols.forEach((c, i) => mTotals[i] = 0);
   let tJ = 0, tF = 0;
 
   users.forEach(user => {{
@@ -1579,21 +1607,27 @@ function buildComparison() {{
       if (!selGroups.some(g => ug.includes(g))) return;
     }}
     const p = COMPARISON[user];
+    const uM = {{}};
+    vm.forEach(m => uM[m] = 0);
     let uJ = 0, uF = 0;
     vm.forEach(m => {{
       const d = p.months[m] || {{jira:0,factorial:0}};
+      uM[m] = d.jira;
       uJ += d.jira; uF += d.factorial;
     }});
     if (uJ === 0 && uF === 0) return;
+    cols.forEach((c, i) => mTotals[i] += colVal(uM, c));
     tJ += uJ; tF += uF;
     if (!showArch && isArchived(user)) return;
     const uid = 'cp' + (rid++);
 
+    let cells = '';
+    cols.forEach(c => cells += '<td>' + fmt(colVal(uM, c)) + '</td>');
     const archCls = ARCHIVED[user] ? ' archived-name' : '';
     html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')" style="text-align:left">' +
-      '<span class="arrow">&#9654;</span> ' + user + archBadge(user) + '</td>' +
-      '<td style="color:var(--blue)">' + fmtEU(uJ) + '</td>' +
+      '<span class="arrow">&#9654;</span> ' + user + archBadge(user) + '</td>' + cells +
+      '<td class="total" style="color:var(--blue)">' + fmtEU(uJ) + '</td>' +
       '<td style="color:var(--purple)">' + fmtEU(uF) + '</td>' +
       cpDiffCell(uJ, uF) + '</tr>\\n';
 
@@ -1607,6 +1641,7 @@ function buildComparison() {{
       mch += '<tr class="row-l1" data-id="' + mid + '" data-parent="' + uid + '" style="display:none">' +
         '<td onclick="toggle(\\'' + mid + '\\')" style="padding-left:24px;text-align:left">' +
         '<span class="arrow">&#9654;</span> ' + mLabel + '</td>' +
+        '<td colspan="' + nCols + '"></td>' +
         '<td style="color:var(--blue)">' + fmtEU(md.jira) + '</td>' +
         '<td style="color:var(--purple)">' + fmtEU(md.factorial) + '</td>' +
         cpDiffCell(md.jira, md.factorial) + '</tr>\\n';
@@ -1622,6 +1657,7 @@ function buildComparison() {{
         const dayLabel = dayName + ' ' + parseInt(day.slice(8));
         dch += '<tr class="row-l2" data-parent="' + mid + '" style="display:none">' +
           '<td style="padding-left:48px;text-align:left">' + dayLabel + holBadge + '</td>' +
+          '<td colspan="' + nCols + '"></td>' +
           '<td style="color:var(--blue)">' + fmtEU(dd.jira) + '</td>' +
           '<td style="color:var(--purple)">' + fmtEU(dd.factorial) + '</td>' +
           cpDiffCell(dd.jira, dd.factorial) + '</tr>\\n';
@@ -1631,8 +1667,10 @@ function buildComparison() {{
     LAZY[uid] = mch;
   }});
 
-  html += '<tr class="row-totals"><td>TOTAL</td>' +
-    '<td class="total" style="color:var(--blue)">' + fmtEU(tJ) + '</td>' +
+  let tCells = '';
+  cols.forEach((c, i) => tCells += '<td class="total">' + fmtEU(mTotals[i]) + '</td>');
+  html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
+    '<td class="total grand" style="color:var(--blue)">' + fmtEU(tJ) + '</td>' +
     '<td class="total" style="color:var(--purple)">' + fmtEU(tF) + '</td>' +
     cpDiffCell(tJ, tF) + '</tr>';
   document.getElementById('cpBody').innerHTML = html;
