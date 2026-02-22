@@ -1549,14 +1549,18 @@ function buildChanges() {{
   document.getElementById('chBody').innerHTML = html;
 }}
 
-function cpDiffCell(j, f) {{
+function cpBg(j, f) {{
   const diff = j - f;
   const pct = f > 0 ? (diff / f * 100) : (j > 0 ? 100 : 0);
   const absPct = Math.abs(pct);
-  const bg = absPct <= 10 ? '' : absPct <= 25 ? 'background:#fef3c7;' : 'background:#fecaca;';
+  return absPct <= 10 ? '' : absPct <= 25 ? 'background:#fef3c7;' : 'background:#fecaca;';
+}}
+function cpDiffCell(j, f) {{
+  const diff = j - f;
+  const pct = f > 0 ? (diff / f * 100) : (j > 0 ? 100 : 0);
   const sign = diff > 0 ? '+' : diff < 0 ? '-' : '';
   const pSign = pct > 0 ? '+' : pct < 0 ? '-' : '';
-  return '<td style="' + bg + '">' + sign + fmtEU(Math.abs(diff)) + '</td><td style="' + bg + '">' + pSign + Math.abs(pct).toFixed(0) + '%</td>';
+  return '<td>' + sign + fmtEU(Math.abs(diff)) + '</td><td>' + pSign + Math.abs(pct).toFixed(0) + '%</td>';
 }}
 
 const DAYNAMES = ['Dom','Lun','Mar','Mi\u00e9','Jue','Vie','S\u00e1b'];
@@ -1624,7 +1628,8 @@ function buildComparison() {{
     let cells = '';
     cols.forEach(c => cells += '<td>' + fmt(colVal(uM, c)) + '</td>');
     const archCls = ARCHIVED[user] ? ' archived-name' : '';
-    html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '">' +
+    const uBg = cpBg(uJ, uF);
+    html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '" style="' + uBg + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')" style="text-align:left">' +
       '<span class="arrow">&#9654;</span> ' + user + archBadge(user) + '</td>' + cells +
       '<td class="total" style="color:var(--blue)">' + fmtEU(uJ) + '</td>' +
@@ -1637,8 +1642,9 @@ function buildComparison() {{
       if (md.jira === 0 && md.factorial === 0) return;
       const mid = 'cp' + (rid++);
       const mLabel = MNAMES[m.slice(5)] + ' ' + m.slice(0,4);
+      const mBg = cpBg(md.jira, md.factorial);
 
-      mch += '<tr class="row-l1" data-id="' + mid + '" data-parent="' + uid + '" style="display:none">' +
+      mch += '<tr class="row-l1" data-id="' + mid + '" data-parent="' + uid + '" style="display:none;' + mBg + '">' +
         '<td onclick="toggle(\\'' + mid + '\\')" style="padding-left:24px;text-align:left">' +
         '<span class="arrow">&#9654;</span> ' + mLabel + '</td>' +
         '<td colspan="' + nCols + '"></td>' +
@@ -1655,7 +1661,8 @@ function buildComparison() {{
         const hol = HOLIDAYS[day];
         const holBadge = hol ? ' <span style="font-size:0.6rem;background:#dbeafe;color:#1e40af;padding:1px 5px;border-radius:6px">' + hol + '</span>' : '';
         const dayLabel = dayName + ' ' + parseInt(day.slice(8));
-        dch += '<tr class="row-l2" data-parent="' + mid + '" style="display:none">' +
+        const dBg = cpBg(dd.jira, dd.factorial);
+        dch += '<tr class="row-l2" data-parent="' + mid + '" style="display:none;' + dBg + '">' +
           '<td style="padding-left:48px;text-align:left">' + dayLabel + holBadge + '</td>' +
           '<td colspan="' + nCols + '"></td>' +
           '<td style="color:var(--blue)">' + fmtEU(dd.jira) + '</td>' +
@@ -1678,9 +1685,19 @@ function buildComparison() {{
 
 function buildLeaves() {{
   updateGroupLabel('groupSelectLv', 'groupLabelLv');
+  const vm = getVisibleMonths();
   const selGroups = getSelectedGroups('groupSelectLv');
   const showArch = document.getElementById('showArchivedLv') && document.getElementById('showArchivedLv').checked;
   Object.keys(LAZY).forEach(k => {{ if (k.startsWith('lv')) delete LAZY[k]; }});
+
+  // Build date range from visible months
+  const rangeFrom = vm.length > 0 ? vm[0] + '-01' : '0000-00-01';
+  const lastM = vm.length > 0 ? vm[vm.length - 1] : '9999-12';
+  const lyp = parseInt(lastM.substring(0, 4));
+  const lmp = parseInt(lastM.substring(5, 7));
+  const lastDay = new Date(lyp, lmp, 0).getDate();
+  const rangeTo = lastM + '-' + (lastDay < 10 ? '0' : '') + lastDay;
+
   const users = Object.keys(LEAVES).sort(sortES);
   let html = '';
   let rid = 0;
@@ -1691,19 +1708,32 @@ function buildLeaves() {{
       const ug = USER_GROUPS[user] || [];
       if (!selGroups.some(g => ug.includes(g))) return;
     }}
-    const entries = LEAVES[user];
+    const allEntries = LEAVES[user];
+    // Filter entries that overlap with selected date range
+    const entries = allEntries.filter(e => e.end_date >= rangeFrom && e.start_date <= rangeTo);
+    if (entries.length === 0) return;
     const uid = 'lv' + (rid++);
     let uDays = 0;
     const typeDays = {{}};
 
-    // Group entries by month (YYYY-MM from start_date)
+    // Group entries by month (only months within range)
     const byMonth = {{}};
     entries.forEach(e => {{
-      uDays += e.days;
-      typeDays[e.leave_type] = (typeDays[e.leave_type] || 0) + e.days;
-      const mk = e.start_date ? e.start_date.substring(0, 7) : '0000-00';
-      if (!byMonth[mk]) byMonth[mk] = [];
-      byMonth[mk].push(e);
+      // Clamp leave dates to the selected range
+      const sd = e.start_date < rangeFrom ? rangeFrom : e.start_date;
+      const ed = e.end_date > rangeTo ? rangeTo : e.end_date;
+      const clampedDays = Math.max(0, Math.round((new Date(ed + 'T00:00:00') - new Date(sd + 'T00:00:00')) / 86400000) + 1);
+      uDays += clampedDays;
+      typeDays[e.leave_type] = (typeDays[e.leave_type] || 0) + clampedDays;
+      // Distribute into months within the range
+      const startM = sd.substring(0, 7);
+      const endM = ed.substring(0, 7);
+      vm.forEach(m => {{
+        if (m >= startM && m <= endM) {{
+          if (!byMonth[m]) byMonth[m] = [];
+          if (!byMonth[m].includes(e)) byMonth[m].push(e);
+        }}
+      }});
     }});
     totalDays += uDays;
     if (!showArch && isArchived(user)) return;
@@ -1727,12 +1757,16 @@ function buildLeaves() {{
       const mMonthIdx = parseInt(mk.substring(5, 7)) - 1;
       const mFirstDay = new Date(mYear, mMonthIdx, 1);
       const mLastDay = new Date(mYear, mMonthIdx + 1, 0);
+      // Also clamp to selected range
+      const rFrom = new Date(rangeFrom + 'T00:00:00');
+      const rTo = new Date(rangeTo + 'T00:00:00');
+      const effFirst = mFirstDay > rFrom ? mFirstDay : rFrom;
+      const effLast = mLastDay < rTo ? mLastDay : rTo;
       mEntries.forEach(e => {{
-        // Count only days within this month
         const sd = new Date(e.start_date + 'T00:00:00');
         const ed = new Date(e.end_date + 'T00:00:00');
-        const from = sd > mFirstDay ? sd : mFirstDay;
-        const to = ed < mLastDay ? ed : mLastDay;
+        const from = sd > effFirst ? sd : effFirst;
+        const to = ed < effLast ? ed : effLast;
         const dInMonth = Math.max(0, Math.round((to - from) / 86400000) + 1);
         mDays += dInMonth;
         mTypeDays[e.leave_type] = (mTypeDays[e.leave_type] || 0) + dInMonth;
@@ -1745,18 +1779,13 @@ function buildLeaves() {{
         '<span class="arrow">&#9654;</span> ' + mLabel + '</td>' +
         '<td style="text-align:left;font-size:0.75rem;color:var(--muted)">' + mTypeSummary + '</td><td></td><td></td><td></td><td class="total">' + mDays + '</td></tr>\\n';
 
-      // Detail rows (L2) — show individual days of this month
+      // Detail rows (L2) — show individual days of this month within range
       let dhtml = '';
       mEntries.forEach(e => {{
-        // Calculate which days of this month (mk) are covered by this leave
         const sd = new Date(e.start_date + 'T00:00:00');
         const ed = new Date(e.end_date + 'T00:00:00');
-        const mYear = parseInt(mk.substring(0, 4));
-        const mMonth = parseInt(mk.substring(5, 7)) - 1;
-        const mStart = new Date(mYear, mMonth, 1);
-        const mEnd = new Date(mYear, mMonth + 1, 0); // last day of month
-        const from = sd > mStart ? sd : mStart;
-        const to = ed < mEnd ? ed : mEnd;
+        const from = sd > effFirst ? sd : effFirst;
+        const to = ed < effLast ? ed : effLast;
         const dayNums = [];
         for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {{
           dayNums.push(d.getDate());
