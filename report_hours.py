@@ -1016,9 +1016,9 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   </div>
   <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px;">
     Comparaci&oacute;n de horas JIRA vs fichajes Factorial. Expandir: usuario &rarr; mes &rarr; d&iacute;a.
-    <span style="color:var(--green)">&FilledSmallSquare; &lt;10%</span>
-    <span style="color:var(--amber)">&FilledSmallSquare; 10-25%</span>
-    <span style="color:#ef4444">&FilledSmallSquare; &gt;25%</span>
+    <span style="color:var(--green)">&FilledSmallSquare; &lt;5%</span>
+    <span style="color:var(--amber)">&FilledSmallSquare; 5-10%</span>
+    <span style="color:#ef4444">&FilledSmallSquare; &gt;10%</span>
   </p>
   <div class="table-wrap">
     <table>
@@ -1553,7 +1553,7 @@ function cpBg(j, f) {{
   const diff = j - f;
   const pct = f > 0 ? (diff / f * 100) : (j > 0 ? 100 : 0);
   const absPct = Math.abs(pct);
-  return absPct <= 10 ? '' : absPct <= 25 ? 'background:#fef3c7;' : 'background:#fecaca;';
+  return absPct < 5 ? '' : absPct <= 10 ? 'background:#fef3c7;' : 'background:#fecaca;';
 }}
 function cpDiffCell(j, f) {{
   const diff = j - f;
