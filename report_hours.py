@@ -423,25 +423,24 @@ def build_employee_match(jira_emails, fact_employees, groups_info):
 
 
 def build_comparison_data(raw, matched, attendance, months,
-                          daily_jira=None, daily_factorial=None):
+                          daily_jira=None, daily_factorial=None,
+                          fact_employees=None):
     """Build JIRA vs Factorial hours comparison with daily detail.
 
+    Includes ALL users: matched + unmatched JIRA users + unmatched Factorial.
     Structure: {user: {months: {m: {jira, factorial, days: {d: {jira, factorial}}}}}}
     """
-    from datetime import date as dt_date
     daily_jira = daily_jira or {}
     daily_factorial = daily_factorial or {}
     comparison = {}
 
-    for display_name, match_info in sorted(matched.items()):
-        fact_id = match_info["factorial_id"]
-        fact_attendance = attendance.get(fact_id, {})
-        fact_daily = daily_factorial.get(fact_id, {})
+    def _build_person(display_name, fact_id=None):
+        fact_attendance = attendance.get(fact_id, {}) if fact_id else {}
+        fact_daily = daily_factorial.get(fact_id, {}) if fact_id else {}
         jira_daily = daily_jira.get(display_name, {})
 
         person = {"months": {}}
         total_j, total_f = 0, 0
-
         for m in months:
             jira_h = 0
             if display_name in raw:
@@ -450,7 +449,6 @@ def build_comparison_data(raw, matched, attendance, months,
             jira_h = round(jira_h, 1)
             fact_h = round(fact_attendance.get(m, 0), 1)
 
-            # Collect daily data for this month
             y, mo = int(m[:4]), int(m[5:7])
             days_in_month = calendar.monthrange(y, mo)[1]
             days = {}
@@ -467,25 +465,50 @@ def build_comparison_data(raw, matched, attendance, months,
 
         if total_j > 0 or total_f > 0:
             comparison[display_name] = person
+
+    # 1. Matched users (JIRA + Factorial)
+    matched_jira_names = set()
+    matched_fact_ids = set()
+    for display_name, match_info in sorted(matched.items()):
+        matched_jira_names.add(display_name)
+        matched_fact_ids.add(match_info["factorial_id"])
+        _build_person(display_name, match_info["factorial_id"])
+
+    # 2. Unmatched JIRA users (have worklogs but no Factorial match)
+    for jira_name in raw:
+        if jira_name not in matched_jira_names:
+            _build_person(jira_name, None)
+
+    # 3. Unmatched Factorial employees (have attendance but no JIRA match)
+    if fact_employees:
+        fact_id_to_name = {emp["id"]: emp["full_name"]
+                           for emp in fact_employees.values()
+                           if not emp.get("terminated_on")}
+        for fact_id in attendance:
+            if fact_id not in matched_fact_ids and fact_id in fact_id_to_name:
+                name = fact_id_to_name[fact_id]
+                _build_person(name, fact_id)
+
     return comparison
 
 
-def build_leaves_data(matched, leaves):
-    """Build leaves/absences data per person."""
-    result = {}
-    for display_name, match_info in sorted(matched.items()):
-        fact_id = match_info["factorial_id"]
-        emp_leaves = leaves.get(fact_id, [])
-        if not emp_leaves:
-            continue
+def build_leaves_data(matched, leaves, fact_employees=None):
+    """Build leaves/absences data per person.
+
+    Uses matched (JIRA-Factorial email match) as primary source.
+    Also includes unmatched Factorial employees who have leaves,
+    using their Factorial name as display name.
+    """
+    from datetime import date as dt_date
+
+    def _build_entries(emp_leaves):
         entries = []
         for lv in emp_leaves:
             start = lv["start_date"]
             end = lv["end_date"]
             try:
-                from datetime import date
-                d1 = date.fromisoformat(start)
-                d2 = date.fromisoformat(end)
+                d1 = dt_date.fromisoformat(start)
+                d2 = dt_date.fromisoformat(end)
                 days = max(1, (d2 - d1).days + 1)
             except (ValueError, TypeError):
                 days = 1
@@ -496,7 +519,29 @@ def build_leaves_data(matched, leaves):
                 "status": lv["status"],
                 "days": days,
             })
-        result[display_name] = entries
+        return entries
+
+    result = {}
+    matched_fact_ids = set()
+    for display_name, match_info in sorted(matched.items()):
+        fact_id = match_info["factorial_id"]
+        matched_fact_ids.add(fact_id)
+        emp_leaves = leaves.get(fact_id, [])
+        if not emp_leaves:
+            continue
+        result[display_name] = _build_entries(emp_leaves)
+
+    # Include unmatched Factorial employees who have leaves
+    if fact_employees:
+        fact_id_to_name = {}
+        for email, emp in fact_employees.items():
+            fact_id_to_name[emp["id"]] = emp["full_name"]
+        for fact_id, emp_leaves in leaves.items():
+            if fact_id in matched_fact_ids or not emp_leaves:
+                continue
+            name = fact_id_to_name.get(fact_id, f"Factorial #{fact_id}")
+            result[name] = _build_entries(emp_leaves)
+
     return result
 
 
@@ -862,10 +907,13 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   .row-totals td:first-child {{ text-align: left; position: sticky; left: 0; background: #f1f5f9; z-index: 1; }}
   .row-totals td.grand {{ color: var(--green); font-size: 0.9rem; }}
 
-  /* Year headers */
+  /* Year headers & alternating year bands */
   .year-row th {{ background: #e8edf5; }}
   .year-th {{ cursor: pointer; text-align: center !important; font-size: 0.78rem; }}
   .year-th:hover {{ background: #dce3ed !important; }}
+  .yb {{ background: rgba(99,132,255,0.06); }}
+  th.yb {{ background: rgba(99,132,255,0.12); }}
+  .year-row th.yb {{ background: #dde4f5; }}
 
   .zero {{ color: #cbd5e1; }}
   .archived-name {{ opacity: 0.55; }}
@@ -1108,11 +1156,13 @@ function getYearGroups(vm) {{
 function getColumns(vm) {{
   const yg = getYearGroups(vm);
   const cols = [];
-  Object.keys(yg).sort().forEach(y => {{
+  const years = Object.keys(yg).sort();
+  years.forEach((y, yi) => {{
+    const odd = yi % 2 === 1;
     if (collapsedYears.has(y)) {{
-      cols.push({{type: 'year', year: y, months: yg[y]}});
+      cols.push({{type: 'year', year: y, months: yg[y], yb: odd}});
     }} else {{
-      yg[y].forEach(m => cols.push({{type: 'month', month: m}}));
+      yg[y].forEach(m => cols.push({{type: 'month', month: m, yb: odd}}));
     }}
   }});
   return cols;
@@ -1139,26 +1189,30 @@ function buildHeaders(theadId, bodyId) {{
   const yg = getYearGroups(vm);
   const years = Object.keys(yg).sort();
   let yr = '<tr class="year-row"><th></th>';
-  years.forEach(y => {{
+  years.forEach((y, yi) => {{
     const cl = collapsedYears.has(y);
     const span = cl ? 1 : yg[y].length;
     const arrow = cl ? '&#9654;' : '&#9660;';
-    yr += '<th colspan="' + span + '" class="year-th" onclick="toggleYear(\\'' + y + '\\')">' + arrow + ' ' + y + '</th>';
+    const ybCls = yi % 2 === 1 ? ' yb' : '';
+    yr += '<th colspan="' + span + '" class="year-th' + ybCls + '" onclick="toggleYear(\\'' + y + '\\')">' + arrow + ' ' + y + '</th>';
   }});
   yr += '<th></th></tr>';
   const toggle = bodyId ? ' style="cursor:pointer;user-select:none" onclick="toggleAllRows(\\'' + bodyId + '\\')" title="Expandir / Colapsar todo"' : '';
   const tArrow = bodyId ? '<span class="arrow" style="font-size:0.65rem;margin-right:4px">&#9654;</span> ' : '';
   let mr = '<tr><th' + toggle + '>' + tArrow + 'Nombre</th>';
   cols.forEach(c => {{
+    const ybCls = c.yb ? ' class="yb"' : '';
     if (c.type === 'year') {{
-      mr += '<th>Total</th>';
+      mr += '<th' + ybCls + '>Total</th>';
     }} else {{
-      mr += '<th>' + MNAMES[c.month.slice(5)] + '</th>';
+      mr += '<th' + ybCls + '>' + MNAMES[c.month.slice(5)] + '</th>';
     }}
   }});
   mr += '<th>TOTAL</th></tr>';
   document.getElementById(theadId).innerHTML = yr + mr;
 }}
+
+function ybTd(c, html) {{ return c.yb ? '<td class="yb">' + html + '</td>' : '<td>' + html + '</td>'; }}
 
 function fmtEU(n, decimals) {{
   if (typeof decimals === 'undefined') decimals = 1;
@@ -1327,7 +1381,7 @@ function buildPersonal() {{
     if (!showArch && isArchived(user)) return;
 
     let cells = '';
-    cols.forEach(c => cells += '<td>' + fmt(colVal(uM, c)) + '</td>');
+    cols.forEach(c => cells += ybTd(c, fmt(colVal(uM, c))));
     const archCls = ARCHIVED[user] ? ' archived-name' : '';
     html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')">' +
@@ -1348,7 +1402,7 @@ function buildPersonal() {{
       if (pTotal === 0) return;
 
       let pCells = '';
-      cols.forEach(c => pCells += '<td>' + fmt(colVal(pM, c)) + '</td>');
+      cols.forEach(c => pCells += ybTd(c, fmt(colVal(pM, c))));
       ch += '<tr class="row-l1" data-id="' + pid + '" data-parent="' + uid + '" style="display:none">' +
         '<td onclick="toggle(\\'' + pid + '\\')">' +
         '<span class="arrow">&#9654;</span> ' + proj + '</td>' + pCells +
@@ -1364,7 +1418,7 @@ function buildPersonal() {{
         vm.forEach(m => tT += tM[m]);
         if (tT === 0) return;
         let tCells = '';
-        cols.forEach(c => tCells += '<td>' + fmt(colVal(tM, c)) + '</td>');
+        cols.forEach(c => tCells += ybTd(c, fmt(colVal(tM, c))));
         tch += '<tr class="row-l2" data-parent="' + pid + '" style="display:none">' +
           '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
           t.summary.substring(0, 50) + '</td>' + tCells +
@@ -1376,7 +1430,7 @@ function buildPersonal() {{
   }});
 
   let tCells = '';
-  cols.forEach((c, i) => tCells += '<td class="total">' + fmtEU(mTotals[i]) + '</td>');
+  cols.forEach((c, i) => tCells += (c.yb ? '<td class="total yb">' : '<td class="total">') + fmtEU(mTotals[i]) + '</td>');
   html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
     '<td class="total grand">' + fmtEU(gt) + '</td></tr>';
   document.getElementById('pBody').innerHTML = html;
@@ -1416,7 +1470,7 @@ function buildNeuro() {{
     if (uTotal === 0) return;
 
     let cells = '';
-    cols.forEach((c, i) => {{ const v = colVal(uM, c); mTotals[i] += v; cells += '<td>' + fmt(v) + '</td>'; }});
+    cols.forEach((c, i) => {{ const v = colVal(uM, c); mTotals[i] += v; cells += ybTd(c, fmt(v)); }});
     gt += uTotal;
     html += '<tr class="row-l0" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')">' +
@@ -1455,7 +1509,7 @@ function buildNeuro() {{
         vm.forEach(m => tT += tM[m]);
         if (tT === 0) return;
         let tCells = '';
-        cols.forEach(c => tCells += '<td>' + fmt(colVal(tM, c)) + '</td>');
+        cols.forEach(c => tCells += ybTd(c, fmt(colVal(tM, c))));
         tch += '<tr class="row-l2" data-parent="' + cid + '" style="display:none">' +
           '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
           t.summary.substring(0, 50) + '</td>' + tCells +
@@ -1467,7 +1521,7 @@ function buildNeuro() {{
   }});
 
   let tCells = '';
-  cols.forEach((c, i) => tCells += '<td class="total">' + fmtEU(mTotals[i]) + '</td>');
+  cols.forEach((c, i) => tCells += (c.yb ? '<td class="total yb">' : '<td class="total">') + fmtEU(mTotals[i]) + '</td>');
   html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
     '<td class="total grand">' + fmtEU(gt) + '</td></tr>';
   document.getElementById('nBody').innerHTML = html;
@@ -1516,7 +1570,7 @@ function buildChanges() {{
     if (lTotal === 0) return;
 
     let cells = '';
-    cols.forEach((c, i) => {{ const v = colVal(lM, c); mTotals[i] += v; cells += '<td>' + fmt(v) + '</td>'; }});
+    cols.forEach((c, i) => {{ const v = colVal(lM, c); mTotals[i] += v; cells += ybTd(c, fmt(v)); }});
     gt += lTotal;
     html += '<tr class="row-l0" data-id="' + lid + '">' +
       '<td onclick="toggle(\\'' + lid + '\\')">' +
@@ -1533,7 +1587,7 @@ function buildChanges() {{
       vm.forEach(m => tT += tM[m]);
       if (tT === 0) return;
       let tCells = '';
-      cols.forEach(c => tCells += '<td>' + fmt(colVal(tM, c)) + '</td>');
+      cols.forEach(c => tCells += ybTd(c, fmt(colVal(tM, c))));
       ch += '<tr class="row-l1" data-parent="' + lid + '" style="display:none">' +
         '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
         t.summary.substring(0, 50) + ' <small style="color:#94a3b8">(' + t.change_date + ')</small></td>' + tCells +
@@ -1543,7 +1597,7 @@ function buildChanges() {{
   }});
 
   let tCells = '';
-  cols.forEach((c, i) => tCells += '<td class="total">' + fmtEU(mTotals[i]) + '</td>');
+  cols.forEach((c, i) => tCells += (c.yb ? '<td class="total yb">' : '<td class="total">') + fmtEU(mTotals[i]) + '</td>');
   html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
     '<td class="total grand">' + fmtEU(gt) + '</td></tr>';
   document.getElementById('chBody').innerHTML = html;
@@ -1571,18 +1625,20 @@ function buildCpHeaders() {{
   const yg = getYearGroups(vm);
   const years = Object.keys(yg).sort();
   let yr = '<tr class="year-row"><th></th>';
-  years.forEach(y => {{
+  years.forEach((y, yi) => {{
     const cl = collapsedYears.has(y);
     const span = cl ? 1 : yg[y].length;
     const arrow = cl ? '&#9654;' : '&#9660;';
-    yr += '<th colspan="' + span + '" class="year-th" onclick="toggleYear(\\'' + y + '\\')">' + arrow + ' ' + y + '</th>';
+    const ybCls = yi % 2 === 1 ? ' yb' : '';
+    yr += '<th colspan="' + span + '" class="year-th' + ybCls + '" onclick="toggleYear(\\'' + y + '\\')">' + arrow + ' ' + y + '</th>';
   }});
   yr += '<th></th><th colspan="3" style="text-align:center;font-size:0.7rem">Comparaci\u00f3n</th></tr>';
   const toggle = ' style="cursor:pointer;user-select:none" onclick="toggleAllRows(\\\'cpBody\\\')" title="Expandir / Colapsar todo"';
   let mr = '<tr><th' + toggle + '><span class="arrow" style="font-size:0.65rem;margin-right:4px">&#9654;</span> Nombre</th>';
   cols.forEach(c => {{
-    if (c.type === 'year') mr += '<th>Total</th>';
-    else mr += '<th>' + MNAMES[c.month.slice(5)] + '</th>';
+    const ybCls = c.yb ? ' class="yb"' : '';
+    if (c.type === 'year') mr += '<th' + ybCls + '>Total</th>';
+    else mr += '<th' + ybCls + '>' + MNAMES[c.month.slice(5)] + '</th>';
   }});
   mr += '<th>TOTAL</th><th style="color:var(--purple)">Factorial</th><th>Diff</th><th>%</th></tr>';
   document.getElementById('cpHead').innerHTML = yr + mr;
@@ -1626,7 +1682,7 @@ function buildComparison() {{
     const uid = 'cp' + (rid++);
 
     let cells = '';
-    cols.forEach(c => cells += '<td>' + fmt(colVal(uM, c)) + '</td>');
+    cols.forEach(c => cells += ybTd(c, fmt(colVal(uM, c))));
     const archCls = ARCHIVED[user] ? ' archived-name' : '';
     const uBg = cpBg(uJ, uF);
     html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '" style="' + uBg + '">' +
@@ -1675,7 +1731,7 @@ function buildComparison() {{
   }});
 
   let tCells = '';
-  cols.forEach((c, i) => tCells += '<td class="total">' + fmtEU(mTotals[i]) + '</td>');
+  cols.forEach((c, i) => tCells += (c.yb ? '<td class="total yb">' : '<td class="total">') + fmtEU(mTotals[i]) + '</td>');
   html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
     '<td class="total grand" style="color:var(--blue)">' + fmtEU(tJ) + '</td>' +
     '<td class="total" style="color:var(--purple)">' + fmtEU(tF) + '</td>' +
@@ -2063,9 +2119,10 @@ def main():
 
             comparison_data = build_comparison_data(
                 raw, matched, all_attendance, months,
-                daily_jira=daily_raw, daily_factorial=all_attendance_daily
+                daily_jira=daily_raw, daily_factorial=all_attendance_daily,
+                fact_employees=all_fact_employees
             )
-            leaves_data = build_leaves_data(matched, all_leaves_raw)
+            leaves_data = build_leaves_data(matched, all_leaves_raw, all_fact_employees)
             print(f"  {len(comparison_data)} personas en comparación, "
                   f"{len(leaves_data)} con ausencias")
         except Exception as e:
