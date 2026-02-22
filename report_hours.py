@@ -1046,7 +1046,7 @@ const MNAMES = {json.dumps(MONTH_NAMES)};
 const collapsedYears = new Set();
 
 const sortES = (a, b) => a.localeCompare(b, 'es', {{sensitivity: 'base'}});
-function fmt(h) {{ return h === 0 ? '<span class="zero">-</span>' : h.toFixed(1); }}
+function fmt(h) {{ return h === 0 ? '<span class="zero">-</span>' : h.toLocaleString('es-ES', {{minimumFractionDigits:1, maximumFractionDigits:1}}); }}
 let _dt; function debounce(fn) {{ clearTimeout(_dt); _dt = setTimeout(fn, 80); }}
 const LAZY = {{}};
 
@@ -1135,25 +1135,43 @@ function buildHeaders(theadId, bodyId) {{
   document.getElementById(theadId).innerHTML = yr + mr;
 }}
 
+function fmtEU(n, decimals) {{
+  if (typeof decimals === 'undefined') decimals = 1;
+  return n.toLocaleString('es-ES', {{minimumFractionDigits: decimals, maximumFractionDigits: decimals}});
+}}
+function fmtEUint(n) {{
+  return n.toLocaleString('es-ES');
+}}
 function updateSummary() {{
   const vm = getVisibleMonths();
+  const selGroups = getSelectedGroups();
+  const selClients = getSelectedClients();
   let totalHours = 0;
   let totalUsers = new Set();
+  let totalTasks = 0;
   Object.keys(PERSONAL).forEach(user => {{
+    if (selGroups.length > 0) {{
+      const ug = USER_GROUPS[user] || [];
+      if (!selGroups.some(g => ug.includes(g))) return;
+    }}
     let userH = 0;
+    let userTasks = 0;
     Object.values(PERSONAL[user]).forEach(proj => {{
-      Object.values(proj).forEach(t => {{
-        vm.forEach(m => {{ userH += (t.months[m] || 0); }});
+      Object.entries(proj).forEach(([key, t]) => {{
+        if (!issueClientOk(key, selClients)) return;
+        let taskH = 0;
+        vm.forEach(m => {{ taskH += (t.months[m] || 0); }});
+        if (taskH > 0) {{ userH += taskH; userTasks++; }}
       }});
     }});
-    if (userH > 0) totalUsers.add(user);
-    totalHours += userH;
+    if (userH > 0) {{ totalUsers.add(user); totalHours += userH; totalTasks += userTasks; }}
   }});
   document.getElementById('summaryCards').innerHTML =
-    '<div class="stat"><div class="val">' + totalUsers.size + '</div><div class="lbl">Usuarios</div></div>' +
-    '<div class="stat"><div class="val">' + vm.length + '</div><div class="lbl">Meses</div></div>' +
-    '<div class="stat"><div class="val">' + totalHours.toFixed(1) + '</div><div class="lbl">Total horas</div></div>' +
-    '<div class="stat"><div class="val">' + (vm.length > 0 ? (totalHours / vm.length).toFixed(1) : '0') + '</div><div class="lbl">Media mensual</div></div>';
+    '<div class="stat"><div class="val">' + fmtEUint(totalUsers.size) + '</div><div class="lbl">Usuarios</div></div>' +
+    '<div class="stat"><div class="val">' + fmtEUint(vm.length) + '</div><div class="lbl">Meses</div></div>' +
+    '<div class="stat"><div class="val">' + fmtEU(totalHours) + '</div><div class="lbl">Total horas</div></div>' +
+    '<div class="stat"><div class="val">' + (vm.length > 0 ? fmtEU(totalHours / vm.length) : '0') + '</div><div class="lbl">Media mensual</div></div>' +
+    '<div class="stat"><div class="val">' + fmtEUint(totalTasks) + '</div><div class="lbl">Tareas</div></div>';
 }}
 
 function toggle(id) {{
@@ -1241,6 +1259,7 @@ function archBadge(user) {{
 function buildPersonal() {{
   updateGroupLabel();
   updateClientLabel();
+  updateSummary();
   const vm = getVisibleMonths();
   const cols = getColumns(vm);
   const selGroups = getSelectedGroups();
@@ -1288,7 +1307,7 @@ function buildPersonal() {{
     html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')">' +
       '<span class="arrow">&#9654;</span> ' + user + archBadge(user) + '</td>' + cells +
-      '<td class="total">' + uTotal.toFixed(1) + '</td></tr>\\n';
+      '<td class="total">' + fmtEU(uTotal) + '</td></tr>\\n';
 
     let ch = '';
     Object.keys(projs).sort().forEach(proj => {{
@@ -1308,7 +1327,7 @@ function buildPersonal() {{
       ch += '<tr class="row-l1" data-id="' + pid + '" data-parent="' + uid + '" style="display:none">' +
         '<td onclick="toggle(\\'' + pid + '\\')">' +
         '<span class="arrow">&#9654;</span> ' + proj + '</td>' + pCells +
-        '<td class="total">' + pTotal.toFixed(1) + '</td></tr>\\n';
+        '<td class="total">' + fmtEU(pTotal) + '</td></tr>\\n';
 
       let tch = '';
       Object.keys(tasks).sort().forEach(issKey => {{
@@ -1324,7 +1343,7 @@ function buildPersonal() {{
         tch += '<tr class="row-l2" data-parent="' + pid + '" style="display:none">' +
           '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
           t.summary.substring(0, 50) + '</td>' + tCells +
-          '<td>' + tT.toFixed(1) + '</td></tr>\\n';
+          '<td>' + fmtEU(tT) + '</td></tr>\\n';
       }});
       LAZY[pid] = tch;
     }});
@@ -1332,9 +1351,9 @@ function buildPersonal() {{
   }});
 
   let tCells = '';
-  cols.forEach((c, i) => tCells += '<td class="total">' + mTotals[i].toFixed(1) + '</td>');
+  cols.forEach((c, i) => tCells += '<td class="total">' + fmtEU(mTotals[i]) + '</td>');
   html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
-    '<td class="total grand">' + gt.toFixed(1) + '</td></tr>';
+    '<td class="total grand">' + fmtEU(gt) + '</td></tr>';
   document.getElementById('pBody').innerHTML = html;
 }}
 
@@ -1377,7 +1396,7 @@ function buildNeuro() {{
     html += '<tr class="row-l0" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')">' +
       '<span class="arrow">&#9654;</span> ' + parent + '</td>' + cells +
-      '<td class="total">' + uTotal.toFixed(1) + '</td></tr>\\n';
+      '<td class="total">' + fmtEU(uTotal) + '</td></tr>\\n';
 
     let ch = '';
     Object.keys(children).sort(sortES).forEach(child => {{
@@ -1398,7 +1417,7 @@ function buildNeuro() {{
       ch += '<tr class="row-l1" data-id="' + cid + '" data-parent="' + uid + '" style="display:none">' +
         '<td onclick="toggle(\\'' + cid + '\\')">' +
         '<span class="arrow">&#9654;</span> ' + child + '</td>' + cCells +
-        '<td class="total">' + cTotal.toFixed(1) + '</td></tr>\\n';
+        '<td class="total">' + fmtEU(cTotal) + '</td></tr>\\n';
 
       let tch = '';
       Object.keys(tasks).sort().forEach(issKey => {{
@@ -1415,7 +1434,7 @@ function buildNeuro() {{
         tch += '<tr class="row-l2" data-parent="' + cid + '" style="display:none">' +
           '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
           t.summary.substring(0, 50) + '</td>' + tCells +
-          '<td>' + tT.toFixed(1) + '</td></tr>\\n';
+          '<td>' + fmtEU(tT) + '</td></tr>\\n';
       }});
       LAZY[cid] = tch;
     }});
@@ -1423,9 +1442,9 @@ function buildNeuro() {{
   }});
 
   let tCells = '';
-  cols.forEach((c, i) => tCells += '<td class="total">' + mTotals[i].toFixed(1) + '</td>');
+  cols.forEach((c, i) => tCells += '<td class="total">' + fmtEU(mTotals[i]) + '</td>');
   html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
-    '<td class="total grand">' + gt.toFixed(1) + '</td></tr>';
+    '<td class="total grand">' + fmtEU(gt) + '</td></tr>';
   document.getElementById('nBody').innerHTML = html;
 }}
 
@@ -1477,7 +1496,7 @@ function buildChanges() {{
     html += '<tr class="row-l0" data-id="' + lid + '">' +
       '<td onclick="toggle(\\'' + lid + '\\')">' +
       '<span class="arrow">&#9654;</span> ' + label + '</td>' + cells +
-      '<td class="total">' + lTotal.toFixed(1) + '</td></tr>\\n';
+      '<td class="total">' + fmtEU(lTotal) + '</td></tr>\\n';
 
     let ch = '';
     Object.keys(tasks).sort().forEach(issKey => {{
@@ -1493,15 +1512,15 @@ function buildChanges() {{
       ch += '<tr class="row-l1" data-parent="' + lid + '" style="display:none">' +
         '<td><a href="' + JIRA + '/browse/' + issKey + '" target="_blank">' + issKey + '</a> ' +
         t.summary.substring(0, 50) + ' <small style="color:#94a3b8">(' + t.change_date + ')</small></td>' + tCells +
-        '<td class="total">' + tT.toFixed(1) + '</td></tr>\\n';
+        '<td class="total">' + fmtEU(tT) + '</td></tr>\\n';
     }});
     LAZY[lid] = ch;
   }});
 
   let tCells = '';
-  cols.forEach((c, i) => tCells += '<td class="total">' + mTotals[i].toFixed(1) + '</td>');
+  cols.forEach((c, i) => tCells += '<td class="total">' + fmtEU(mTotals[i]) + '</td>');
   html += '<tr class="row-totals"><td>TOTAL</td>' + tCells +
-    '<td class="total grand">' + gt.toFixed(1) + '</td></tr>';
+    '<td class="total grand">' + fmtEU(gt) + '</td></tr>';
   document.getElementById('chBody').innerHTML = html;
 }}
 
@@ -1510,9 +1529,9 @@ function cpDiffCell(j, f) {{
   const pct = f > 0 ? (diff / f * 100) : (j > 0 ? 100 : 0);
   const absPct = Math.abs(pct);
   const bg = absPct <= 10 ? '' : absPct <= 25 ? 'background:#fef3c7;' : 'background:#fecaca;';
-  const sign = diff > 0 ? '+' : '';
-  const pSign = pct > 0 ? '+' : '';
-  return '<td style="' + bg + '">' + sign + diff.toFixed(1) + '</td><td style="' + bg + '">' + pSign + pct.toFixed(0) + '%</td>';
+  const sign = diff > 0 ? '+' : diff < 0 ? '-' : '';
+  const pSign = pct > 0 ? '+' : pct < 0 ? '-' : '';
+  return '<td style="' + bg + '">' + sign + fmtEU(Math.abs(diff)) + '</td><td style="' + bg + '">' + pSign + Math.abs(pct).toFixed(0) + '%</td>';
 }}
 
 const DAYNAMES = ['Dom','Lun','Mar','Mi\u00e9','Jue','Vie','S\u00e1b'];
@@ -1549,8 +1568,8 @@ function buildComparison() {{
     html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')" style="text-align:left">' +
       '<span class="arrow">&#9654;</span> ' + user + archBadge(user) + '</td>' +
-      '<td style="color:var(--blue)">' + uJ.toFixed(1) + '</td>' +
-      '<td style="color:var(--purple)">' + uF.toFixed(1) + '</td>' +
+      '<td style="color:var(--blue)">' + fmtEU(uJ) + '</td>' +
+      '<td style="color:var(--purple)">' + fmtEU(uF) + '</td>' +
       cpDiffCell(uJ, uF) + '</tr>\\n';
 
     let mch = '';
@@ -1563,8 +1582,8 @@ function buildComparison() {{
       mch += '<tr class="row-l1" data-id="' + mid + '" data-parent="' + uid + '" style="display:none">' +
         '<td onclick="toggle(\\'' + mid + '\\')" style="padding-left:24px;text-align:left">' +
         '<span class="arrow">&#9654;</span> ' + mLabel + '</td>' +
-        '<td style="color:var(--blue)">' + md.jira.toFixed(1) + '</td>' +
-        '<td style="color:var(--purple)">' + md.factorial.toFixed(1) + '</td>' +
+        '<td style="color:var(--blue)">' + fmtEU(md.jira) + '</td>' +
+        '<td style="color:var(--purple)">' + fmtEU(md.factorial) + '</td>' +
         cpDiffCell(md.jira, md.factorial) + '</tr>\\n';
 
       let dch = '';
@@ -1578,8 +1597,8 @@ function buildComparison() {{
         const dayLabel = dayName + ' ' + parseInt(day.slice(8));
         dch += '<tr class="row-l2" data-parent="' + mid + '" style="display:none">' +
           '<td style="padding-left:48px;text-align:left">' + dayLabel + holBadge + '</td>' +
-          '<td style="color:var(--blue)">' + dd.jira.toFixed(1) + '</td>' +
-          '<td style="color:var(--purple)">' + dd.factorial.toFixed(1) + '</td>' +
+          '<td style="color:var(--blue)">' + fmtEU(dd.jira) + '</td>' +
+          '<td style="color:var(--purple)">' + fmtEU(dd.factorial) + '</td>' +
           cpDiffCell(dd.jira, dd.factorial) + '</tr>\\n';
       }});
       LAZY[mid] = dch;
@@ -1588,8 +1607,8 @@ function buildComparison() {{
   }});
 
   html += '<tr class="row-totals"><td>TOTAL</td>' +
-    '<td class="total" style="color:var(--blue)">' + tJ.toFixed(1) + '</td>' +
-    '<td class="total" style="color:var(--purple)">' + tF.toFixed(1) + '</td>' +
+    '<td class="total" style="color:var(--blue)">' + fmtEU(tJ) + '</td>' +
+    '<td class="total" style="color:var(--purple)">' + fmtEU(tF) + '</td>' +
     cpDiffCell(tJ, tF) + '</tr>';
   document.getElementById('cpBody').innerHTML = html;
 }}
