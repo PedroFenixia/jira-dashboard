@@ -192,6 +192,7 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
     # user -> date_str -> hours (daily aggregate for comparison)
     daily_raw = defaultdict(lambda: defaultdict(float))
     total_wl = 0
+    issues_extra_fetch = 0
 
     for idx, issue in enumerate(issues):
         issue_key = issue["key"]
@@ -208,8 +209,11 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
         worklogs = issue.get("fields", {}).get("worklog", {}).get("worklogs", [])
         wl_total = issue.get("fields", {}).get("worklog", {}).get("total", 0)
         if wl_total > len(worklogs):
+            issues_extra_fetch += 1
             try:
                 worklogs = client.get_issue_worklogs(issue_key)
+                if len(worklogs) != wl_total:
+                    print(f"    {issue_key}: {wl_total} total, obtenidos {len(worklogs)}")
             except Exception:
                 pass
 
@@ -243,7 +247,7 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
         if (idx + 1) % 50 == 0:
             print(f"  {idx + 1}/{len(issues)} issues procesadas...")
 
-    print(f"  {total_wl} worklogs procesados")
+    print(f"  {total_wl} worklogs procesados ({issues_extra_fetch} issues con paginación extra)")
     return raw, daily_raw
 
 

@@ -68,7 +68,13 @@ class JiraClient:
             data = self._request("GET", url, params=params).json()
             page = data.get(key, [])
             results.extend(page)
-            if data.get("isLast", True) or len(page) < params["maxResults"]:
+            # Some endpoints (worklogs) don't return isLast; use total instead
+            is_last = data.get("isLast")
+            if is_last is None:
+                total = data.get("total", 0)
+                if len(results) >= total or len(page) < params["maxResults"]:
+                    break
+            elif is_last or len(page) < params["maxResults"]:
                 break
             params["startAt"] += params["maxResults"]
 
@@ -144,7 +150,7 @@ class JiraClient:
 
     def get_issue_worklogs(self, issue_key):
         url = f"{self.config.api_url}/issue/{issue_key}/worklog"
-        return self._paginate_offset(url, key="worklogs")
+        return self._paginate_offset(url, params={"maxResults": 5000}, key="worklogs")
 
     # ── Field discovery ──────────────────────────────────────────
 
