@@ -1065,8 +1065,9 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
   <p style="font-size:0.8rem;color:var(--muted);margin-bottom:12px;">
     Comparaci&oacute;n de horas JIRA vs fichajes Factorial. Expandir: usuario &rarr; mes &rarr; d&iacute;a.
     <span style="color:var(--green)">&FilledSmallSquare; &lt;5%</span>
-    <span style="color:var(--amber)">&FilledSmallSquare; 5-10%</span>
-    <span style="color:#ef4444">&FilledSmallSquare; &gt;10%</span>
+    <span style="color:#3b82f6">&FilledSmallSquare; +5% (JIRA &gt; Fact)</span>
+    <span style="color:var(--amber)">&FilledSmallSquare; -5 a -10%</span>
+    <span style="color:#ef4444">&FilledSmallSquare; &gt;-10%</span>
   </p>
   <div class="table-wrap">
     <table>
@@ -1607,7 +1608,9 @@ function cpBg(j, f) {{
   const diff = j - f;
   const pct = f > 0 ? (diff / f * 100) : (j > 0 ? 100 : 0);
   const absPct = Math.abs(pct);
-  return absPct < 5 ? '' : absPct <= 10 ? 'background:#fef3c7;' : 'background:#fecaca;';
+  if (absPct < 5) return '';
+  if (diff > 0) return 'background:#dbeafe;';
+  return absPct <= 10 ? 'background:#fef3c7;' : 'background:#fecaca;';
 }}
 function cpDiffCell(j, f) {{
   const diff = j - f;
@@ -1681,10 +1684,10 @@ function buildComparison() {{
     if (!showArch && isArchived(user)) return;
     const uid = 'cp' + (rid++);
 
-    let cells = '';
-    cols.forEach(c => cells += ybTd(c, fmt(colVal(uM, c))));
     const archCls = ARCHIVED[user] ? ' archived-name' : '';
     const uBg = cpBg(uJ, uF);
+    let cells = '';
+    cols.forEach(c => cells += uBg ? '<td>' + fmt(colVal(uM, c)) + '</td>' : ybTd(c, fmt(colVal(uM, c))));
     html += '<tr class="row-l0' + archCls + '" data-id="' + uid + '" style="' + uBg + '">' +
       '<td onclick="toggle(\\'' + uid + '\\')" style="text-align:left">' +
       '<span class="arrow">&#9654;</span> ' + user + archBadge(user) + '</td>' + cells +
