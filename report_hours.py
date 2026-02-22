@@ -2123,8 +2123,38 @@ def main():
                 fact_employees=all_fact_employees
             )
             leaves_data = build_leaves_data(matched, all_leaves_raw, all_fact_employees)
+
+            # Add terminated unmatched Factorial employees to archived_users
+            matched_fact_ids = {m["factorial_id"] for m in matched.values()}
+            from datetime import date as _dt_date
+            _today = _dt_date.today()
+            for email, emp in all_fact_employees.items():
+                term_date = emp.get("terminated_on")
+                if not term_date:
+                    continue
+                if emp["id"] in matched_fact_ids:
+                    continue  # already handled by find_factorial_jira_accounts
+                name = emp["full_name"]
+                if name in archived_users:
+                    continue
+                # Check if this employee appears in comparison or leaves
+                if name not in comparison_data and name not in leaves_data:
+                    continue
+                term_dt = _dt_date.fromisoformat(term_date)
+                archive_m = term_dt.month + 2
+                archive_y = term_dt.year
+                if archive_m > 12:
+                    archive_m -= 12
+                    archive_y += 1
+                is_archived = _today >= _dt_date(archive_y, archive_m, 1)
+                archived_users[name] = {
+                    "terminated_on": term_date,
+                    "archived": is_archived,
+                }
+
             print(f"  {len(comparison_data)} personas en comparación, "
-                  f"{len(leaves_data)} con ausencias")
+                  f"{len(leaves_data)} con ausencias, "
+                  f"{len(archived_users)} archivados")
         except Exception as e:
             import traceback
             print(f"\nError en Factorial (continuando sin datos Factorial): {e}")
