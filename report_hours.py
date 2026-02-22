@@ -166,9 +166,10 @@ def find_factorial_jira_accounts(client, fact_employees, date_from, date_to,
 def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
     """Fetch worklogs with task-level detail.
 
-    Returns: (raw, daily_raw)
+    Returns: (raw, daily_raw, name_to_aid)
       raw: user -> month -> issue_key -> {summary, hours, ...}
       daily_raw: user -> date_str -> hours (for Factorial comparison)
+      name_to_aid: displayName -> accountId (for group mapping)
     """
     to_y, to_m = int(date_to[:4]), int(date_to[5:7])
     last_day = calendar.monthrange(to_y, to_m)[1]
@@ -191,6 +192,8 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
     raw = defaultdict(lambda: defaultdict(lambda: defaultdict(lambda: {"summary": "", "hours": 0.0})))
     # user -> date_str -> hours (daily aggregate for comparison)
     daily_raw = defaultdict(lambda: defaultdict(float))
+    # displayName -> accountId (for reliable group mapping)
+    name_to_aid = {}
     total_wl = 0
     issues_extra_fetch = 0
 
@@ -231,6 +234,9 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
             if allowed_account_ids and author_id not in allowed_account_ids:
                 continue
 
+            if author_id:
+                name_to_aid[author_name] = author_id
+
             seconds = wl.get("timeSpentSeconds", 0)
             hours = seconds / 3600
             month_key = f"{wl_date.year}-{wl_date.month:02d}"
@@ -248,7 +254,7 @@ def fetch_worklogs(client, date_from, date_to, allowed_account_ids=None):
             print(f"  {idx + 1}/{len(issues)} issues procesadas...")
 
     print(f"  {total_wl} worklogs procesados ({issues_extra_fetch} issues con paginación extra)")
-    return raw, daily_raw
+    return raw, daily_raw, name_to_aid
 
 
 def _search_jql_direct(client, jql, fields):
@@ -531,7 +537,8 @@ def generate_csv(raw, months, output_path):
 
 def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output_path,
                    client_changes=None, comparison_data=None, leaves_data=None,
-                   factorial_stats=None, archived_users=None, holidays=None):
+                   factorial_stats=None, archived_users=None, holidays=None,
+                   name_to_aid=None):
     """Generate interactive HTML with tabs: Personal, Neuro360, Cambios Cliente, + Factorial."""
 
     def _norm(val, default=""):
@@ -626,13 +633,31 @@ def generate_html(raw, months, groups_info, date_from, date_to, jira_url, output
 
         print(f"  issue_worklogs: {len(issue_worklogs)} issues, changes_data: {sum(len(v) for v in changes_data.values())} entradas en {len(changes_data)} transiciones")
 
-    # Build user -> groups mapping
+    # Build user -> groups mapping (using accountId for reliable matching)
     user_groups_map = {}
     if groups_info:
-        for aid, info in groups_info.items():
-            name = info["displayName"]
-            if name in personal_data:
-                user_groups_map[name] = info["groups"]
+        aid_groups = {aid: info["groups"] for aid, info in groups_info.items()}
+        if name_to_aid:
+            # Match via accountId: worklog displayName -> accountId -> groups
+            for name in personal_data:
+                aid = name_to_aid.get(name)
+                if aid and aid in aid_groups:
+                    user_groups_map[name] = aid_groups[aid]
+                else:
+                    # Fallback: try displayName match from groups_info
+                    for a, info in groups_info.items():
+                        if info["displayName"] == name:
+                            user_groups_map[name] = info["groups"]
+                            break
+        else:
+            for aid, info in groups_info.items():
+                name = info["displayName"]
+                if name in personal_data:
+                    user_groups_map[name] = info["groups"]
+        # Log users without group mapping
+        unmapped = [n for n in personal_data if n not in user_groups_map]
+        if unmapped:
+            print(f"  Usuarios sin grupo mapeado: {unmapped}")
 
     group_names = sorted(set(g for info in groups_info.values() for g in info["groups"])) if groups_info else []
 
@@ -1887,7 +1912,7 @@ def main():
             traceback.print_exc()
 
     months = build_months(args.date_from, args.date_to)
-    raw, daily_raw = fetch_worklogs(client, args.date_from, args.date_to, allowed_ids)
+    raw, daily_raw, name_to_aid = fetch_worklogs(client, args.date_from, args.date_to, allowed_ids)
 
     if not raw:
         print("Aviso: No se encontraron worklogs en el rango de fechas. Generando informe vacío.")
@@ -1991,7 +2016,8 @@ def main():
                              comparison_data=comparison_data, leaves_data=leaves_data,
                              factorial_stats=factorial_stats,
                              archived_users=archived_users,
-                             holidays=all_holidays)
+                             holidays=all_holidays,
+                             name_to_aid=name_to_aid)
 
     abs_path = os.path.abspath(path)
     print(f"\nInforme generado: {abs_path}")
