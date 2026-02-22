@@ -1507,10 +1507,12 @@ function buildChanges() {{
 
 function cpDiffCell(j, f) {{
   const diff = j - f;
-  const pct = f > 0 ? Math.abs(diff / f * 100) : (j > 0 ? 100 : 0);
-  const bg = pct <= 10 ? '' : pct <= 25 ? 'background:#fef3c7;' : 'background:#fecaca;';
+  const pct = f > 0 ? (diff / f * 100) : (j > 0 ? 100 : 0);
+  const absPct = Math.abs(pct);
+  const bg = absPct <= 10 ? '' : absPct <= 25 ? 'background:#fef3c7;' : 'background:#fecaca;';
   const sign = diff > 0 ? '+' : '';
-  return '<td style="' + bg + '">' + sign + diff.toFixed(1) + '</td><td style="' + bg + '">' + pct.toFixed(0) + '%</td>';
+  const pSign = pct > 0 ? '+' : '';
+  return '<td style="' + bg + '">' + sign + diff.toFixed(1) + '</td><td style="' + bg + '">' + pSign + pct.toFixed(0) + '%</td>';
 }}
 
 const DAYNAMES = ['Dom','Lun','Mar','Mi\u00e9','Jue','Vie','S\u00e1b'];
